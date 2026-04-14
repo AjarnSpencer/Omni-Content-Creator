@@ -1,5 +1,5 @@
 <div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
+<img width="1200" height="475" src="https://github.com/AjarnSpencer/Omni-Content-Creator/blob/main/public/Industrial%20Serial%20Communication_%20Connectors%20and%20Standards.png?raw=true" alt="Omni-Content Creator" />
 </div>
 
 # Run and deploy Omni-Content Creator app
