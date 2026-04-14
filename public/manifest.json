@@ -1,0 +1,16 @@
+{
+  "name": "Omni-Content Creator Art & Story",
+  "short_name": "Omni-Content Creator",
+  "description": "Multilingual Visual Geometry & Infographic Generator with Traditional & Modern Art Themes",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#1a1005",
+  "theme_color": "#fbbf24",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}

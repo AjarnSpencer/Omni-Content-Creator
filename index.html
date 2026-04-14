@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Omni-Content Creator</title>
+    <link rel="manifest" href="/manifest.json" />
+    <meta name="theme-color" content="#1a1005" />
+    <script src="https://cdn.tailwindcss.com?plugins=typography"></script>
+    <script src="https://cdn.jsdelivr.net/npm/lamejs@1.2.1/lame.min.js"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;700&family=Inter:wght@300;400;500;600&family=Merriweather:ital,wght@0,300;0,400;0,700;1,300&family=Sarabun:wght@300;400;600&family=JetBrains+Mono:wght@400;500&family=Moul&family=Noto+Sans+Devanagari:wght@400;700&family=Noto+Sans+Hebrew:wght@400;700&family=Noto+Sans+Khmer:wght@400;700&family=Noto+Sans+Tai+Tham:wght@400;700&family=Noto+Sans+Tibetan:wght@400;700&family=Noto+Sans+Thai:wght@300;400;600&family=Noto+Sans+Sinhala:wght@400;700&family=Noto+Sans+Tamil:wght@400;700&family=Noto+Sans+Kannada:wght@400;700&family=Noto+Sans+Arabic:wght@400;700&family=Noto+Sans+Myanmar:wght@400;700&family=Noto+Sans+Lao:wght@400;700&family=Noto+Sans+JP:wght@400;700&family=Noto+Sans+KR:wght@400;700&family=Noto+Sans+SC:wght@400;700&family=Noto+Sans+TC:wght@400;700&family=Share+Tech+Mono&family=Bangers&display=swap" rel="stylesheet">
+    <script>
+      tailwind.config = {
+        darkMode: 'class',
+        theme: {
+          extend: {
+            fontFamily: {
+              sans: ['Inter', 'Sarabun', 'sans-serif'],
+              serif: ['Merriweather', 'serif'],
+              mono: ['JetBrains Mono', 'monospace'],
+              display: ['Cinzel', 'serif'],
+              khmer: ['Moul', 'Noto Sans Khmer', 'serif'],
+              thai: ['Sarabun', 'Noto Sans Thai', 'sans-serif'],
+              devanagari: ['Noto Sans Devanagari', 'sans-serif'],
+              hebrew: ['Noto Sans Hebrew', 'sans-serif'],
+              tibetan: ['Noto Sans Tibetan', 'sans-serif'],
+              taitham: ['Noto Sans Tai Tham', 'sans-serif'],
+            },
+            colors: {
+              scholastic: {
+                50: '#fdfbf7',
+                100: '#f7f3e8',
+                500: '#8c7a5b',
+                800: '#5c4d32',
+                900: '#3d321f',
+              },
+              rattanakosin: {
+                50: '#fffbea',
+                100: '#fff1c2',
+                500: '#f59e0b', // Saffron Gold
+                600: '#d97706',
+                800: '#92400e',
+                900: '#78350f',
+                gold: '#fbbf24',
+                red: '#991b1b', // Temple Red
+                emerald: '#065f46', // Emerald Buddha green
+              }
+            }
+          }
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/index.tsx"></script>
+  </body>
+</html>
