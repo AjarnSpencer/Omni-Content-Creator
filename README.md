@@ -10,7 +10,7 @@ View and try Omni-Content Creator app online: <a href="https://ai.studio/apps/3d
 
 ### Examples of Art/Infographics made with Omni-Content Creator
 
-<img width="1200" height="475" src="https://github.com/AjarnSpencer/Omni-Content-Creator/blob/main/public/The%20Peace%20Convoy%20and%20the%20Battle%20of%20the%20Beanfield.png?raw=true" alt="Omni-Content Creator" />
+<img style="width: 900;" src="https://github.com/AjarnSpencer/Omni-Content-Creator/blob/main/public/The%20Peace%20Convoy%20and%20the%20Battle%20of%20the%20Beanfield.png?raw=true" alt="Omni-Content Creator" />
 ## Run Locally
 
 **Prerequisites:**  Node.js
