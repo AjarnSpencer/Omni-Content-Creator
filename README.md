@@ -6,8 +6,11 @@
 
 This info contains everything you need to run Omni-Content Creator app locally.
 
-View and try Omni-Content Creator app online: https://ai.studio/apps/3d671c4f-5c63-4774-895c-b55d66da2cbf
+View and try Omni-Content Creator app online: <a href="https://ai.studio/apps/3d671c4f-5c63-4774-895c-b55d66da2cbf">Omni-Content Creator</a>
 
+### Examples of Art/Infographics made with Omni-Content Creator
+
+<img width="1200" height="475" src="https://github.com/AjarnSpencer/Omni-Content-Creator/blob/main/public/The%20Peace%20Convoy%20and%20the%20Battle%20of%20the%20Beanfield.png?raw=true" alt="Omni-Content Creator" />
 ## Run Locally
 
 **Prerequisites:**  Node.js
