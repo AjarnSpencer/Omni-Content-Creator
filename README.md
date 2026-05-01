@@ -1,5 +1,5 @@
 <div align="center">
-<img width="1200" height="475" src="https://github.com/AjarnSpencer/Omni-Content-Creator/blob/main/public/Industrial%20Serial%20Communication_%20Connectors%20and%20Standards.png?raw=true" alt="Omni-Content Creator" />
+<img width="1200" height="475" src="https://github.com/AjarnSpencer/Omni-Content-Creator/blob/main/public/onicontent-creator-byok.png?raw=true" alt="Omni-Content Creator" />
 </div>
 
 # Run and deploy Omni-Content Creator app
@@ -11,6 +11,8 @@ View and try Omni-Content Creator app online: <a href="https://omni-content-crea
 ### Examples of Art/Infographics made with Omni-Content Creator
 
 <img style="width: 900;" src="https://github.com/AjarnSpencer/Omni-Content-Creator/blob/main/public/The%20Peace%20Convoy%20and%20the%20Battle%20of%20the%20Beanfield.png?raw=true" alt="Omni-Content Creator" />
+
+<img style="width: 900;" src="https://github.com/AjarnSpencer/Omni-Content-Creator/blob/main/public/Industrial%20Serial%20Communication_%20Connectors%20and%20Standards.png" />
 ## Run Locally
 
 **Prerequisites:**  Node.js
