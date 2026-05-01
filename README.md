@@ -15,7 +15,7 @@
 <img style="width: 900;" src="https://github.com/AjarnSpencer/Omni-Content-Creator/blob/main/public/The%20Peace%20Convoy%20and%20the%20Battle%20of%20the%20Beanfield.png?raw=true" alt="Omni-Content Creator" />
 
 <img style="width: 900;" src="https://github.com/AjarnSpencer/Omni-Content-Creator/blob/main/public/Industrial%20Serial%20Communication_%20Connectors%20and%20Standards.png" />
-## Run Locally
+<h3>Run Locally:</h3>
 
 **Prerequisites:**  Node.js
 
