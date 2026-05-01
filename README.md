@@ -1,5 +1,5 @@
 <div align="center">
-<img width="1200" height="475" src="https://github.com/AjarnSpencer/Omni-Content-Creator/blob/main/public/onicontent-creator-byok.png?raw=true" alt="Omni-Content Creator" />
+<img style="text-align:center; width: 900px;" src="https://github.com/AjarnSpencer/Omni-Content-Creator/blob/main/public/onicontent-creator-byok.png?raw=true" alt="Omni-Content Creator" />
 </div>
 
 # Run and deploy Omni-Content Creator app
