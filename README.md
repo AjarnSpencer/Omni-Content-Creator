@@ -6,7 +6,7 @@
 
 This info contains everything you need to run Omni-Content Creator app locally.
 
-View and try Omni-Content Creator app online: <a href="https://ai.studio/apps/3d671c4f-5c63-4774-895c-b55d66da2cbf">Omni-Content Creator</a>
+View and try Omni-Content Creator app online: <a href="https://omni-content-creator-594226924032.us-west1.run.app">Omni-Content Creator</a>
 
 ### Examples of Art/Infographics made with Omni-Content Creator
 
