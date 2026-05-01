@@ -15,8 +15,9 @@
 
 <br />
 <img style="width: 900;" src="https://github.com/AjarnSpencer/Omni-Content-Creator/blob/main/public/The%20Peace%20Convoy%20and%20the%20Battle%20of%20the%20Beanfield.png?raw=true" alt="Omni-Content Creator" />
-
-<img style="width: 900;" src="https://github.com/AjarnSpencer/Omni-Content-Creator/blob/main/public/Industrial%20Serial%20Communication_%20Connectors%20and%20Standards.png" />
+<br />
+<img style="width: 900;" src="https://github.com/AjarnSpencer/Omni-Content-Creator/blob/main/public/The%20Botanical%20Blueprint_%20Divine%20Geometry%20of%20Growth-background.png?raw=true" alt="Omni-Content Creator" /><br />
+<img style="width: 900;" src="https://github.com/AjarnSpencer/Omni-Content-Creator/blob/main/public/Industrial%20Serial%20Communication_%20Connectors%20and%20Standards.png" /><br />
 <h3>Run Locally:</h3>
 
 **Prerequisites:**  Node.js
