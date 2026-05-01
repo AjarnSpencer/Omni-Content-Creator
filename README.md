@@ -11,7 +11,9 @@
 <p style="font-size:large;"><b>View and try Omni-Content Creator app online:</b> <a style="font-size:large;" href="https://omni-content-creator-594226924032.us-west1.run.app">Omni-Content Creator</a></p>
 
 ### Examples of Art/Infographics made with Omni-Content Creator
+<img style="width: 900;" src="https://github.com/AjarnSpencer/Omni-Content-Creator/blob/main/public/The%20Botanical%20Blueprint_%20Divine%20Geometry%20of%20Growth.png?raw=true" alt="Omni-Content Creator" />
 
+<br />
 <img style="width: 900;" src="https://github.com/AjarnSpencer/Omni-Content-Creator/blob/main/public/The%20Peace%20Convoy%20and%20the%20Battle%20of%20the%20Beanfield.png?raw=true" alt="Omni-Content Creator" />
 
 <img style="width: 900;" src="https://github.com/AjarnSpencer/Omni-Content-Creator/blob/main/public/Industrial%20Serial%20Communication_%20Connectors%20and%20Standards.png" />
