@@ -3,7 +3,7 @@
 <div align="center">
 <img style="text-align:center; width: 900;" src="https://github.com/AjarnSpencer/Omni-Content-Creator/blob/main/public/onicontent-creator-byok.png?raw=true" alt="Omni-Content Creator" />
 </div>
-
+<h4>Omni Content is a Multilingual infographic and visual storytelling generator with diverse cultural, historical, and modern art themes. Create downloadable audio, text, and video summaries with narrative slide-decks for students, tutors, and content creators</h4>
 ## Run and deploy Omni-Content Creator app:
 
 ### This info contains everything you need to run Omni-Content Creator app locally.
