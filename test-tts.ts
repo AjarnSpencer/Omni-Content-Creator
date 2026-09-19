@@ -41,7 +41,7 @@ async function test() {
 
   try {
     const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash-preview-tts",
+      model: "gemini-3.1-flash-tts-preview",
       contents: [{ parts: [{ text: 'Hello world' }] }],
       config: {
         responseModalities: [Modality.AUDIO],
@@ -52,9 +52,9 @@ async function test() {
         },
       },
     });
-    console.log("Success with gemini-2.5-flash-preview-tts");
+    console.log("Success with gemini-3.1-flash-tts-preview");
   } catch (e: any) {
-    console.error("Failed with gemini-2.5-flash-preview-tts:", e.message);
+    console.error("Failed with gemini-3.1-flash-tts-preview:", e.message);
   }
 }
 

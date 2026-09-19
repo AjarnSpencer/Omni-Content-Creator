@@ -1,30 +1,65 @@
-# Omni Content Creator (Polyglot Multilanguage) for Tutors, Students, Content Creators, Podcasters, and Infographics
+# ☸️ Omni-Content Creator
 
-<div align="center">
-<img style="text-align:center; width: 900;" src="https://github.com/AjarnSpencer/Omni-Content-Creator/blob/main/public/onicontent-creator-byok.png?raw=true" alt="Omni-Content Creator" />
-</div>
-<h4>Omni Content is a Multilingual infographic and visual storytelling generator with diverse cultural, historical, and modern art themes. Create downloadable audio, text, and video summaries with narrative slide-decks for students, tutors, and content creators</h4>
-## Run and deploy Omni-Content Creator app:
+> **An Offline-Resilient Multilingual Infographic, Slide Deck, Voice Synthesis & Narrative Studio.**  
+> Crafted with sacred symmetry, traditional artistic palettes, and modern high-fidelity multi-script typography.
 
-### This info contains everything you need to run Omni-Content Creator app locally.
-<img style="text-align:center; width: 900;" src=https://github.com/AjarnSpencer/Omni-Content-Creator/blob/main/public/omni2.png alt="Omni-Content Creator" />
-<p style="font-size:large;"><b>View and try Omni-Content Creator app online:</b> <a style="font-size:large;" href="https://omni-content-creator-594226924032.us-west1.run.app">Omni-Content Creator</a></p>
+---
 
-### Examples of Art/Infographics made with Omni-Content Creator
-<img style="width: 900;" src="https://github.com/AjarnSpencer/Omni-Content-Creator/blob/main/public/The%20Botanical%20Blueprint_%20Divine%20Geometry%20of%20Growth.png?raw=true" alt="Omni-Content Creator" />
+### 🎨 Vision & Aesthetics
+The **Omni-Content Creator** is a professional presentation engine that combines sacred geometric representations (including traditional Rattanakosin, Lanna, Persian Miniature, Islamic Geometric art, and Esoteric Hermetic schemas) with multi-modal generative AI.
+Design elements are crafted with:
+- **Intricate Negative Space**: Balanced visual hierarchies prioritizing pristine content clarity.
+- **Teak & Temple Gold Palettes**: Deep high-contrast mahogany textures, rich vermilion overlays, and traditional yellow-gold accents.
+- **Dynamic CSS Typography**: Seamless display integration with Google Fonts supporting Sanskrit transliterations, Pali characters, and diverse global scripts.
 
-<br />
-<img style="width: 900;" src="https://github.com/AjarnSpencer/Omni-Content-Creator/blob/main/public/The%20Peace%20Convoy%20and%20the%20Battle%20of%20the%20Beanfield.png?raw=true" alt="Omni-Content Creator" />
-<br />
-<img style="width: 900;" src="https://github.com/AjarnSpencer/Omni-Content-Creator/blob/main/public/The%20Botanical%20Blueprint_%20Divine%20Geometry%20of%20Growth-background.png?raw=true" alt="Omni-Content Creator" /><br />
-<img style="width: 900;" src="https://github.com/AjarnSpencer/Omni-Content-Creator/blob/main/public/Industrial%20Serial%20Communication_%20Connectors%20and%20Standards.png" /><br />
-<h3>Run Locally:</h3>
+---
 
-**Prerequisites:**  Node.js
+### 🎙️ Advanced Custom Voice Synthesis & Fine-Tuning
+This system bridges standard voice synthesis limitations by introducing custom **Cadence & Cadence Tuning Scripts** integrated directly into Google Gemini’s high-fidelity audio engine. Users can:
+- **Configure Documentary Narration**: Create natural-pacing nature narrator voices (male & female) designed to prevent AI acceleration or tone shifts.
+- **Instruct Classical Annonuncers**: Achieve perfect newsroom-level romanized and foreign word pronunciations.
+- **Instruct Ancient Sages**: Fine-tune deep, meditative breath guides with precise instructions for steady pacing and lingering intervals.
+- **Tweak Intonation On-the-Fly**: Modify systemic speech guidelines using the collapsible **Voice Tuning panel** inside the Left Side controls.
 
+---
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+### 🛡️ Autonomy & Untethered Offline Resilience (BYOK)
+Designed to survive cloud hosting shifts and serve as a permanent installable local utility:
+1. **Direct Connection**: No paid mediator server or active subscription billing layers.
+2. **Bring Your Own Key (BYOK)**: Connects directly from client-side or local legacy windows/android environments directly to Google’s API end-points using the user's free or paid API key.
+3. **Pristine Local State**: Saves keys and generation records offline in standard browser sandboxes (`localStorage`), making it highly resilient and persistent for years.
+
+---
+
+### 🛠️ Open-Source Collaborations & Solution Stack
+This application stands on the shoulders of the top free open-source achievements:
+- **Engine**: [React 18](https://react.dev) & [Vite](https://vite.dev) Client-Side Foundation.
+- **Design Layout**: [Tailwind CSS](https://tailwindcss.com) Responsive Framework.
+- **Generative Frame**: Official [@google/genai](https://www.npmjs.com/package/@google/genai) SDK with support for stable TTS & Gemini 2.x/3.x family.
+- **Audio Assembly**: `LameJS` MP3 Compressor andPCM Web Audio API.
+- **Content Bundling**: `JSZip` Slide Deck zip packer.
+- **Information Visualization**: [Recharts](https://recharts.org) and [D3](https://d3js.org) diagrams.
+- **Icon Assets**: [Lucide-React](https://lucide.dev) Vector Set.
+
+---
+
+### 🕌 Creator Profile & Attribution
+* **Primary Author & Art Director**: **Ajarn Spencer Littlewood**
+* **Publisher**: **Buddha Magic Multimedia and Publications**
+* **GitHub Page**: [https://github.com/AjarnSpencer](https://github.com/AjarnSpencer)
+* **Official Homepage**: [https://www.ajarnspencer.com](https://www.ajarnspencer.com)
+* **Magic Publisher**: [https://www.buddhamagic.net](https://www.buddhamagic.net)
+
+---
+
+### 🚀 Getting Started Locally
+1. Clone the repository.
+2. Install background dependencies:
+   ```bash
+   npm install
+   ```
+3. Run the development server:
+   ```bash
+   npm run dev
+   ```
+4. Access the GUI at `http://localhost:3000`, enter your Gemini API Key in the BYOK menu, and begin creating.

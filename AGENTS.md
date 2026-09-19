@@ -1,9 +1,9 @@
 # Agent Instructions for Omni Content Creator
 
 ## Infographic Composition Rules
-- **Simplicity**: Info-Graphics should be short and simple and not over-cram the canvas. Infographics should have a 40% Opacity Background Fill to reveal details of BG Art without detracting from the readability of the text.
-- **Text Layout**: All text in infographics must be full width with some padding top bottom left and right respectively, and occupy the width of the infographic container full width except the padding, which should be left all fouur sides.
-- **Text Wrapping**: The text must wrap within its container-background when it reaches the end of its container-width (respecting the padding too). This prevents text from overstepping borders and ensures it fills the container width appropriately.
+- **Simplicity**: Info-Graphics should be short and simple and not over-cram the canvas.
+- **Text Layout**: All text in infographics must be full width with some padding top bottom left and right respectively.
+- **Text Wrapping**: The text must wrap within its container-background. This prevents text from overstepping borders and ensures it fills the container width appropriately.
 
 ## Technical Implementation
 - **Prompt Engineering**: The `systemInstruction` in `services/geminiService.ts` has been updated with a "FULL WIDTH MANDATE" and "TEXT WRAPPING" instructions to ensure the LLM generates SVG with appropriate layout.

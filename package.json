@@ -13,7 +13,9 @@
   "dependencies": {
     "@google/genai": "^1.40.0",
     "@types/express": "^5.0.6",
+    "@types/file-saver": "^2.0.7",
     "express": "^5.2.1",
+    "file-saver": "^2.0.5",
     "jszip": "^3.10.1",
     "lamejs": "^1.2.1",
     "lucide-react": "^0.563.0",

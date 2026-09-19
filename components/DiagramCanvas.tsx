@@ -419,10 +419,10 @@ export const DiagramCanvas: React.FC<DiagramCanvasProps> = ({
       <div className={`absolute top-0 left-0 right-0 p-4 flex justify-between items-center z-20 
         ${isDark ? 'bg-black/60 text-rattanakosin-gold border-b border-rattanakosin-900/50' : 'bg-white/60 text-scholastic-900 border-b border-scholastic-200'} backdrop-blur-md`}>
         <div className="flex flex-col flex-1 min-w-0 pr-4">
-          <h3 className="font-display text-sm font-bold tracking-widest truncate">
+          <h3 className="font-display text-sm sm:text-base font-bold tracking-widest truncate">
             {title || 'Visual Masterpiece'}
           </h3>
-          <span className="text-[9px] opacity-60 uppercase font-mono tracking-tighter truncate">
+          <span className="text-[10px] sm:text-xs opacity-60 uppercase font-mono tracking-tighter truncate">
              {width}x{height} HI-RES // VISUAL SCRIPTURE INSCRIBED
           </span>
         </div>

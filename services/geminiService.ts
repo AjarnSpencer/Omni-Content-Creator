@@ -8,6 +8,16 @@ export const getStoredApiKey = () => localStorage.getItem(API_KEY_STORAGE_KEY);
 export const setStoredApiKey = (key: string) => localStorage.setItem(API_KEY_STORAGE_KEY, key);
 export const removeStoredApiKey = () => localStorage.removeItem(API_KEY_STORAGE_KEY);
 
+const TTS_MODEL_STORAGE_KEY = 'gemini_tts_model_name';
+export const getStoredTtsModel = () => localStorage.getItem(TTS_MODEL_STORAGE_KEY) || 'gemini-3.1-flash-tts-preview';
+export const setStoredTtsModel = (model: string) => localStorage.setItem(TTS_MODEL_STORAGE_KEY, model);
+
+const DEFAULT_TEXT_MODEL = 'gemini-2.5-flash';
+const TEXT_MODEL_STORAGE_KEY = 'gemini_text_model_name';
+export const getStoredTextModel = () => localStorage.getItem(TEXT_MODEL_STORAGE_KEY) || DEFAULT_TEXT_MODEL;
+export const setStoredTextModel = (model: string) => localStorage.setItem(TEXT_MODEL_STORAGE_KEY, model);
+
+
 const getAiClient = () => {
   // Prefer the manually stored key if the user provided one.
   // Otherwise, fallback to the platform-injected API key.
@@ -32,17 +42,22 @@ const withRetry = async <T>(fn: () => Promise<T>, retries = 5, delay = 2000): Pr
       error.message?.includes('429') ||
       error.message?.includes('high demand') ||
       error.message?.includes('UNAVAILABLE') ||
+      error.message?.includes('RESOURCE_EXHAUSTED') ||
+      error.message?.includes('Resource has been exhausted') ||
+      error.message?.includes('rate limit') ||
+      error.message?.includes('Too Many Requests') ||
       error.message?.includes('Quota exceeded');
 
     if (retries > 0 && isTransient) {
-      // Add jitter to delay
+      // Add jitter to delay (longer base delay for rate limits)
+      const baseDelay = error.status === 429 || error.message?.includes('429') || error.message?.includes('RESOURCE_EXHAUSTED') ? Math.max(delay, 3000) : delay;
       const jitter = Math.random() * 1000;
-      await new Promise(resolve => setTimeout(resolve, delay + jitter));
-      return withRetry(fn, retries - 1, delay * 2);
+      await new Promise(resolve => setTimeout(resolve, baseDelay + jitter));
+      return withRetry(fn, retries - 1, baseDelay * 1.5);
     }
     
     if (error.status === 403 || error.message?.includes('403') || error.message?.includes('Forbidden')) {
-      throw new Error("Access Forbidden (403). This usually means your API Key is restricted, has insufficient permissions for this model, or your region is not supported for this specific model. Try a different API key or check your Google AI Studio project settings.");
+      throw new Error(`Access Forbidden (403). This usually means your API Key is restricted, has insufficient permissions for this model, or your region is not supported. Original error: ${error.message}`);
     }
 
     throw error;
@@ -98,7 +113,7 @@ const getScriptInstructions = (script: ScriptType): string => {
 
 export const generateBackgroundArt = async (prompt: string, style: ArtStyle, ratio: AspectRatio): Promise<string | undefined> => {
   const ai = getAiClient();
-  // Using gemini-2.5-flash-image for published app compatibility
+  // Falling back to gemini-2.5-flash-image for stable image generation
   const model = 'gemini-2.5-flash-image';
   
   console.log(`[Artisan] Manifesting background for style: ${style} with prompt: ${prompt}`);
@@ -735,48 +750,232 @@ export const sanitizeForTTS = (text: string): string => {
     .trim();
 };
 
-export const generateSpeech = async (
-  text: string,
-  voiceName: string = 'Charon'
-): Promise<{ audioUrl: string; blob: Blob; mp3Blob: Blob; mp3Url: string }> => {
-  const ai = getAiClient();
-  const modelName = 'gemini-2.5-flash-preview-tts';
+export interface VoicePreset {
+  id: string;
+  name: string;
+  gender: 'MALE' | 'FEMALE';
+  baseVoice: string; // Puck, Charon, Kore, Fenrir, Zephyr
+  prompt: string;
+}
 
-  const sanitizedText = sanitizeForTTS(text);
-  
-  let voiceStylePrompt = "";
-  if (voiceName === 'Charon') {
-    voiceStylePrompt = "You are a text-to-speech engine. Your ONLY task is to speak the text provided inside the <text_to_speak> tags. Use a very deep, resonant, distinguished mature MALE voice with a reverent, serene tone with perfect news-reader-level professional fluent pronunciation of foreign words, city names, Pali, Sanskrit and Thai Language terminologies and Romanized Pali with 100% accuracy, and a constantly paced speech-rate, with a rhythm of speech that entices to keep listening to the end. Do not speak the tags or any instructions, ONLY speak the text inside the tags:\n\n<text_to_speak>\n";
-  } else {
-    voiceStylePrompt = "You are a text-to-speech engine. Your ONLY task is to speak the text provided inside the <text_to_speak> tags. Use a deep, resonant, distinguished mature FEMALE voice with a reverent, serene tone with perfect news-reader-level professional fluent pronunciation of foreign words, city names, Pali, Sanskrit and Thai Language terminologies and Romanized Pali with 100% accuracy, and a constantly paced speech-rate, with a rhythm of speech that entices to keep listening to the end. Do not speak the tags or any instructions, ONLY speak the text inside the tags:\n\n<text_to_speak>\n";
+export const VOICE_PRESETS: VoicePreset[] = [
+  {
+    id: 'documentary_male',
+    name: 'Classic Documentary Narrator (Male)',
+    gender: 'MALE',
+    baseVoice: 'Charon',
+    prompt: `You are a text-to-speech engine. Use a very deep, warm, distinguished mature English MALE voice inspired by classic nature documentaries. The tone must be filled with quiet wonder, supreme intellectual presence, and serene authority. 
+
+PRONUNCIATION STANDARDS: Impeccably pronounce all foreign, historical, and Romanized words (such as Pali terms, Sanskrit, and Thai names) with 100% accuracy on the level of a world-class newsreader or academic researcher. 
+
+CONSTANT PACING MANDATE: Maintain an absolutely steady, unhurried, measured pace from start to finish. Under NO circumstances should you speed up or rush, even at paragraph ends. Introduce peaceful breathing gaps between clauses.`
+  },
+  {
+    id: 'documentary_female',
+    name: 'Classic Documentary Narrator (Female)',
+    gender: 'FEMALE',
+    baseVoice: 'Kore',
+    prompt: `You are a text-to-speech engine. Use a warm, rich, elegant mature English FEMALE voice inspired by classical nature documentary narrators. The tone must be serene, deeply holding attention, and filled with quiet reverence and wonder.
+
+PRONUNCIATION STANDARDS: Impeccably pronounce all foreign, historical, and Romanized words (such as Pali terms, Sanskrit, and Thai names) with 100% accuracy on the level of a world-class newsreader or academic researcher. 
+
+CONSTANT PACING MANDATE: Maintain an absolutely steady, unhurried, measured pace from start to finish. Under NO circumstances should you speed up or rush, even at paragraph ends. Introduce peaceful breathing gaps between clauses.`
+  },
+  {
+    id: 'news_male',
+    name: 'World-Class Newsreader (Male)',
+    gender: 'MALE',
+    baseVoice: 'Puck',
+    prompt: `You are a text-to-speech engine. Use an articulate, clear, highly professional and objective mature MALE voice, styled like an expert international news broadcaster. The tone must be formal, authoritative, perfectly balanced, and highly clear and readable.
+
+PRONUNCIATION STANDARDS: Impeccably pronounce all foreign, historical, and Romanized words (such as Pali terms, Sanskrit, and Thai names) with 100% accuracy on the level of a world-class newsreader.
+
+CONSTANT PACING MANDATE: Maintain an absolutely steady, perfectly unhurried, and precise rate of speech. Avoid rushing, and maintain clear articulation of every single syllable, with zero sudden changes in speed or rhythm.`
+  },
+  {
+    id: 'news_female',
+    name: 'World-Class Newsreader (Female)',
+    gender: 'FEMALE',
+    baseVoice: 'Kore',
+    prompt: `You are a text-to-speech engine. Use an articulate, polished, highly professional and objective mature FEMALE voice, styled like an expert international news broadcaster. The tone must be formal, authoritative, perfectly balanced, clear, and highly focused.
+
+PRONUNCIATION STANDARDS: Impeccably pronounce all foreign, historical, and Romanized words (such as Pali terms, Sanskrit, and Thai names) with 100% accuracy on the level of a world-class newsreader.
+
+CONSTANT PACING MANDATE: Maintain an absolutely steady, perfectly unhurried, and precise rate of speech. Avoid rushing, and maintain clear articulation of every single syllable, with zero sudden changes in speed or rhythm.`
+  },
+  {
+    id: 'sage_male',
+    name: 'Mystical Scholar & Sage (Male)',
+    gender: 'MALE',
+    baseVoice: 'Fenrir',
+    prompt: `You are a text-to-speech engine. Use a deeply resonant, ancient, and gravelly mature MALE voice with a reverent, mystical, and contemplative timbre. The tone must sound like an ancient master or spiritual sage speaking from deep silence.
+
+PRONUNCIATION STANDARDS: Impeccably pronounce all sacred, foreign, and Romanized words (such as Pali, Sanskrit, Hebrew, Arabic, and Buddhist terms) with 100% scholarly accuracy.
+
+CONSTANT PACING MANDATE: Maintain an exceptionally slow, rhythmic, meditative, and steady pace from start to finish. Under NO circumstances should you speed up. Provide wide, quiet pauses for contemplation after each sentence.`
+  },
+  {
+    id: 'sage_female',
+    name: 'Mystical Scholar & Sage (Female)',
+    gender: 'FEMALE',
+    baseVoice: 'Zephyr',
+    prompt: `You are a text-to-speech engine. Use a serene, ethereal, soft, and warm FEMALE voice with a reverent, peaceful, and mystical quality. The tone must sound like a wise, compassionate spiritual guide or ancient sage.
+
+PRONUNCIATION STANDARDS: Impeccably pronounce all sacred, foreign, and Romanized words (such as Pali, Sanskrit, Hebrew, Arabic, and Buddhist terms) with 100% scholarly accuracy.
+
+CONSTANT PACING MANDATE: Maintain an exceptionally slow, rhythmic, meditative, and steady pace from start to finish. Under NO circumstances should you speed up. Provide wide, quiet pauses for contemplation after each sentence.`
+  },
+];
+
+/**
+ * Splits input text into bite-sized natural chunks for Gemini TTS.
+ * Gemini 3.1 Flash TTS has strict candidate audio limits (~30k tokens) and
+ * prompt length constraints. Splitting at sentence boundaries prevents
+ * "STOP" with empty response and "OTHER" finishReason.
+ */
+export const chunkTextForTTS = (text: string, maxChunkLength: number = 1800): string[] => {
+  const sanitized = sanitizeForTTS(text);
+  if (!sanitized) return [];
+  if (sanitized.length <= maxChunkLength) return [sanitized];
+
+  const chunks: string[] = [];
+  const paragraphs = sanitized.split(/\n+/).map(p => p.trim()).filter(Boolean);
+
+  let currentChunk = '';
+
+  for (const para of paragraphs) {
+    if ((currentChunk + ' ' + para).trim().length <= maxChunkLength) {
+      currentChunk = currentChunk ? `${currentChunk}\n\n${para}` : para;
+    } else {
+      if (currentChunk) {
+        chunks.push(currentChunk.trim());
+        currentChunk = '';
+      }
+
+      if (para.length <= maxChunkLength) {
+        currentChunk = para;
+      } else {
+        // Split paragraph by sentences
+        const sentences = para.match(/[^.!?]+[.!?]+(\s+|$)|[^.!?]+$/g) || [para];
+        for (const sentence of sentences) {
+          const trimmed = sentence.trim();
+          if (!trimmed) continue;
+
+          if ((currentChunk + ' ' + trimmed).trim().length <= maxChunkLength) {
+            currentChunk = currentChunk ? `${currentChunk} ${trimmed}` : trimmed;
+          } else {
+            if (currentChunk) {
+              chunks.push(currentChunk.trim());
+              currentChunk = '';
+            }
+            if (trimmed.length <= maxChunkLength) {
+              currentChunk = trimmed;
+            } else {
+              // Sentence longer than chunk limit: split by commas or clauses
+              const clauses = trimmed.split(/(?<=[,;:])\s+/);
+              for (const clause of clauses) {
+                if ((currentChunk + ' ' + clause).trim().length <= maxChunkLength) {
+                  currentChunk = currentChunk ? `${currentChunk} ${clause}` : clause;
+                } else {
+                  if (currentChunk) chunks.push(currentChunk.trim());
+                  if (clause.length > maxChunkLength) {
+                    const words = clause.split(/\s+/);
+                    let wordChunk = '';
+                    for (const w of words) {
+                      if ((wordChunk + ' ' + w).trim().length <= maxChunkLength) {
+                        wordChunk = wordChunk ? `${wordChunk} ${w}` : w;
+                      } else {
+                        if (wordChunk) chunks.push(wordChunk.trim());
+                        wordChunk = w;
+                      }
+                    }
+                    currentChunk = wordChunk;
+                  } else {
+                    currentChunk = clause;
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
   }
 
-  const finalPrompt = voiceStylePrompt + sanitizedText + "\n</text_to_speak>";
+  if (currentChunk && currentChunk.trim()) {
+    chunks.push(currentChunk.trim());
+  }
 
-  const response = await withRetry(() => ai.models.generateContent({
-    model: modelName,
-    contents: [{ parts: [{ text: finalPrompt }] }],
-    config: {
-      responseModalities: [Modality.AUDIO],
-      speechConfig: {
-        voiceConfig: {
-          // 'Puck', 'Charon', 'Kore', 'Fenrir', 'Zephyr', 'Aoede'
-          prebuiltVoiceConfig: { voiceName },
+  return chunks.length > 0 ? chunks : [sanitized];
+};
+
+const synthesizeSingleChunk = async (
+  ai: GoogleGenAI,
+  modelName: string,
+  chunkText: string,
+  voiceName: string,
+  voicePrompt?: string
+): Promise<Uint8Array> => {
+  let promptText = '';
+  if (voicePrompt && voicePrompt.trim()) {
+    const cleanVoicePrompt = voicePrompt
+      .replace(/<text_to_speak>/gi, '')
+      .replace(/<\/text_to_speak>/gi, '')
+      .trim();
+    promptText = `${cleanVoicePrompt}\n\nRead the following passage:\n"${chunkText}"`;
+  } else {
+    promptText = `Read the following text aloud clearly, naturally, and at an even pace:\n\n"${chunkText}"`;
+  }
+
+  const callModel = async (prompt: string) => {
+    return await ai.models.generateContent({
+      model: modelName,
+      contents: [{ parts: [{ text: prompt }] }],
+      config: {
+        responseModalities: [Modality.AUDIO],
+        speechConfig: {
+          voiceConfig: {
+            prebuiltVoiceConfig: { voiceName: voiceName },
+          },
         },
       },
-    },
-  }));
+    });
+  };
 
-  const candidate = response.candidates?.[0];
-  if (candidate?.finishReason !== 'STOP' && candidate?.finishReason) {
-    console.warn("TTS generation stopped early. Reason:", candidate.finishReason);
+  let response = await withRetry(() => callModel(promptText), 3);
+  let candidate = response.candidates?.[0];
+
+  // Scan ALL candidate parts for inlineData audio
+  let base64Audio: string | undefined;
+  if (candidate?.content?.parts) {
+    for (const part of candidate.content.parts) {
+      if (part.inlineData?.data) {
+        base64Audio = part.inlineData.data;
+        break;
+      }
+    }
   }
 
-  const base64Audio = candidate?.content?.parts?.[0]?.inlineData?.data;
+  // If first attempt returned no audio and a custom prompt was used, fallback to minimal prompt
+  if (!base64Audio) {
+    console.warn("[TTS] Retrying chunk with direct, minimal prompt...");
+    const fallbackPrompt = `Read aloud clearly and naturally: "${chunkText}"`;
+    response = await withRetry(() => callModel(fallbackPrompt), 2);
+    candidate = response.candidates?.[0];
+    if (candidate?.content?.parts) {
+      for (const part of candidate.content.parts) {
+        if (part.inlineData?.data) {
+          base64Audio = part.inlineData.data;
+          break;
+        }
+      }
+    }
+  }
+
   if (!base64Audio) {
     const textResponse = candidate?.content?.parts?.[0]?.text;
-    console.error("TTS Response missing audio. Text response:", textResponse, "Full response:", JSON.stringify(response, null, 2));
-    throw new Error(`No audio generated from Gemini. ${textResponse ? 'Model returned text instead of audio.' : ''} Finish reason: ${candidate?.finishReason || 'Unknown'}`);
+    console.error("[TTS] Response missing audio. Text response:", textResponse, "Candidate:", JSON.stringify(candidate, null, 2));
+    throw new Error(`No audio generated from Gemini for speech segment. ${textResponse ? 'Model returned text instead of audio.' : ''} Finish reason: ${candidate?.finishReason || 'Unknown'}`);
   }
 
   const binaryString = atob(base64Audio);
@@ -785,17 +984,101 @@ export const generateSpeech = async (
     bytes[i] = binaryString.charCodeAt(i);
   }
 
-  // Ensure byte length is even for Int16Array
   const alignedLength = bytes.length - (bytes.length % 2);
-  const alignedBytes = bytes.subarray(0, alignedLength);
+  return bytes.subarray(0, alignedLength);
+};
 
-  const wavBlob = pcmToWav(alignedBytes, 24000);
+export const generateSpeech = async (
+  text: string,
+  voiceName: string = 'Charon',
+  customVoicePrompt?: string,
+  onProgress?: (current: number, total: number) => void
+): Promise<{ audioUrl: string; blob: Blob; mp3Blob: Blob; mp3Url: string }> => {
+  const ai = getAiClient();
+  const modelName = getStoredTtsModel();
+
+  const sanitizedText = sanitizeForTTS(text);
+  if (!sanitizedText) {
+    throw new Error("Text is empty or contains no readable content for speech.");
+  }
+
+  const preset = VOICE_PRESETS.find(p => p.id === voiceName);
+  let resolvedVoice = preset ? preset.baseVoice : voiceName;
+  
+  // Safe normalization of prebuilt voice names supported by Gemini 3.1 Flash TTS
+  const VOICE_MAP: Record<string, string> = {
+    Aoede: 'Kore',
+    aoede: 'Kore',
+    charon: 'Charon',
+    puck: 'Puck',
+    kore: 'Kore',
+    fenrir: 'Fenrir',
+    zephyr: 'Zephyr'
+  };
+  if (VOICE_MAP[resolvedVoice]) {
+    resolvedVoice = VOICE_MAP[resolvedVoice];
+  }
+  const VALID_VOICES = ['Puck', 'Charon', 'Kore', 'Fenrir', 'Zephyr'];
+  if (!VALID_VOICES.includes(resolvedVoice)) {
+    resolvedVoice = 'Charon';
+  }
+
+  const chunks = chunkTextForTTS(sanitizedText, 1800);
+  console.log(`[TTS] Synthesizing speech with voice ${resolvedVoice} across ${chunks.length} segment(s)...`);
+
+  const chunkAudioBuffers: Uint8Array[] = [];
+
+  for (let i = 0; i < chunks.length; i++) {
+    if (onProgress) {
+      onProgress(i + 1, chunks.length);
+    }
+    console.log(`[TTS] Processing segment ${i + 1}/${chunks.length} (${chunks[i].length} chars)...`);
+    const chunkBytes = await synthesizeSingleChunk(
+      ai,
+      modelName,
+      chunks[i],
+      resolvedVoice,
+      customVoicePrompt
+    );
+    chunkAudioBuffers.push(chunkBytes);
+
+    // Delay between segments to respect API pacing
+    if (i < chunks.length - 1) {
+      await new Promise(resolve => setTimeout(resolve, 400));
+    }
+  }
+
+  // Concatenate chunks with silence padding (200ms = 9600 bytes at 24kHz 16-bit)
+  const silenceSamples = 4800; // 200ms at 24000Hz
+  const silenceBytesLength = silenceSamples * 2; // 16-bit = 2 bytes/sample
+  const silence = new Uint8Array(silenceBytesLength);
+
+  let totalLength = 0;
+  for (let i = 0; i < chunkAudioBuffers.length; i++) {
+    totalLength += chunkAudioBuffers[i].length;
+    if (i < chunkAudioBuffers.length - 1) {
+      totalLength += silenceBytesLength;
+    }
+  }
+
+  const mergedBytes = new Uint8Array(totalLength);
+  let offset = 0;
+  for (let i = 0; i < chunkAudioBuffers.length; i++) {
+    mergedBytes.set(chunkAudioBuffers[i], offset);
+    offset += chunkAudioBuffers[i].length;
+    if (i < chunkAudioBuffers.length - 1) {
+      mergedBytes.set(silence, offset);
+      offset += silenceBytesLength;
+    }
+  }
+
+  const wavBlob = pcmToWav(mergedBytes, 24000);
   const wavUrl = URL.createObjectURL(wavBlob);
   
   let mp3Blob = wavBlob; // Fallback to wav if mp3 fails
   let mp3Url = wavUrl;
   try {
-    mp3Blob = pcmToMp3(alignedBytes, 24000);
+    mp3Blob = pcmToMp3(mergedBytes, 24000);
     mp3Url = URL.createObjectURL(mp3Blob);
   } catch (err) {
     console.warn("MP3 encoding failed, falling back to WAV for MP3 download", err);
@@ -804,16 +1087,26 @@ export const generateSpeech = async (
   return { audioUrl: wavUrl, blob: wavBlob, mp3Blob, mp3Url };
 };
 
+export interface SlideContext {
+  slideIndex: number;
+  totalSlides: number;
+  sceneTitle: string;
+  act?: string;
+  narrativeFocus?: string;
+  isFinalSlide: boolean;
+  previousSummaries?: string[];
+}
+
 export const generateSvgContent = async (
   prompt: string,
   style: ArtStyle,
   script: ScriptType,
   ratio: AspectRatio,
-  attachment?: Attachment
+  attachment?: Attachment,
+  slideContext?: SlideContext
 ): Promise<DiagramData> => {
   const ai = getAiClient();
-  // Using gemini-2.5-flash for broader free-tier compatibility and complex multi-agent orchestration
-  const modelName = 'gemini-2.5-flash';
+  const modelName = getStoredTextModel();
   let targetFont = 'Inter';
   if (script === ScriptType.THAI || script === ScriptType.PALI_THAI) targetFont = 'Sarabun';
   else if (script === ScriptType.SANSKRIT) targetFont = 'Noto Sans Devanagari, sans-serif';
@@ -885,6 +1178,24 @@ export const generateSvgContent = async (
        - PADDING: Ensure at least 40px of padding between the text and the edges of the container rectangles.
        - ADAPTABILITY: Distribute text sections across the available canvas space (${width}x${height}) to create a balanced, high-impact infographic composition.
 
+    ${slideContext ? `
+    5. MULTI-SLIDE NARRATIVE CONTINUITY & ANTI-REPETITION MANDATE (ABSOLUTE):
+       - You are drafting SLIDE ${slideContext.slideIndex + 1} of ${slideContext.totalSlides}: "${slideContext.sceneTitle}" (${slideContext.act || `Act ${slideContext.slideIndex + 1}`}).
+       - PREVIOUS SLIDES ALREADY COVERED:
+         ${slideContext.previousSummaries && slideContext.previousSummaries.length > 0
+           ? slideContext.previousSummaries.map((s, idx) => `[Slide ${idx + 1}]: ${s}`).join('\n         ')
+           : 'This is the opening slide (Act 1). Establish the premise and world-building.'}
+       - CRITICAL NON-DUPLICATION RULE:
+         You are STRICTLY FORBIDDEN from repeating the exposition, opening lines, introductions, or concepts already covered in previous slides.
+         DO NOT restart the story from the beginning of the attached document.
+         This slide MUST advance the story chronologically forward from where the previous slide left off.
+       ${slideContext.isFinalSlide ? `
+       - CRITICAL FINAL RESOLUTION MANDATE (CLOSURE & EPILOGUE):
+         This is the FINAL SLIDE (${slideContext.slideIndex + 1} of ${slideContext.totalSlides}) - The Climax, Epilogue, and Resolution.
+         You MUST deliver the culmination, emotional peak, and definitive closure of the story.
+         If the source document lacks an ending, or if the earlier slides consumed all available text: BE BOLD, INVENTIVE, AND CREATIVE. Extrapolate the consequences, resolve the central moral dilemma, and craft a profound, moving philosophical ending. DO NOT repeat the beginning of the story under any circumstances!
+       ` : ''}
+    ` : ''}
 
     OUTPUT FORMAT:
     Respond ONLY in valid JSON format. Omit fields that are not relevant to the specific user request.
@@ -896,10 +1207,26 @@ export const generateSvgContent = async (
     - description: A short summary of the narrative.
   `;
 
-  const contents: any[] = [{ role: 'user', parts: [{ text: prompt }] }];
+  let promptText = prompt;
+  if (slideContext) {
+    promptText = `[NARRATIVE SLIDE ${slideContext.slideIndex + 1} of ${slideContext.totalSlides}]: ${slideContext.sceneTitle} (${slideContext.act || ''})\n` +
+      `Focus for this slide: ${slideContext.narrativeFocus || prompt}\n` +
+      (slideContext.previousSummaries && slideContext.previousSummaries.length > 0 
+        ? `\nPREVIOUS SLIDES ALREADY COVERED (DO NOT REPEAT):\n${slideContext.previousSummaries.join('\n')}\n` +
+          `\nREMINDER: Pick up strictly where Slide ${slideContext.slideIndex} left off. Advance the narrative forward without repeating earlier lines.\n` 
+        : '') +
+      (slideContext.isFinalSlide 
+        ? `\nFINAL SLIDE MANDATE: Write the definitive climax, aftermath, and closure of the story. If the source data ended or is incomplete, use your creativity to invent and enhance the ultimate resolution so the story finishes with emotional resonance and finality!\n` 
+        : '');
+  }
+
+  const contents: any[] = [{ role: 'user', parts: [{ text: promptText }] }];
   if (attachment) {
     if (attachment.type === 'text') {
-      contents[0].parts.push({ text: `Attached Content:\n${attachment.data}` });
+      const sourceNote = slideContext && slideContext.slideIndex > 0
+        ? `Attached Content (Reference Document - note that Slides 1-${slideContext.slideIndex} have already covered the earlier parts of this text; focus strictly on the subsequent chronological section, climax, or resolution):\n`
+        : `Attached Content:\n`;
+      contents[0].parts.push({ text: `${sourceNote}${attachment.data}` });
     } else {
       contents[0].parts.push({
         inlineData: {
@@ -1023,19 +1350,34 @@ export const generateSlideDeck = async (
 ): Promise<DiagramData[]> => {
   const ai = getAiClient();
   const planningSystemInstruction = `
-    You are the Kathika (Narrative Architect).
-    TASK: Break down the user's topic into a sequence of 3-4 distinct "slides" or "scenes" for a visual presentation.
+    You are the Kathika (Narrative Architect & Master Storyteller).
+    TASK: Break down the user's topic or attached document into a sequence of 4 distinct "scenes" or "acts" for a sequential audio-book visual narrative.
     
-    REQUIREMENTS:
-    - Create a cohesive narrative arc.
-    - Each scene must have a distinct visual theme and key concept.
-    - sceneTitle: A concise, evocative title for the scene. 
-      CRITICAL: DO NOT include "Scene 1", "Slide 1", or any numerical prefixes. Use only descriptive, context-relevant titles.
-    - visualPrompt: A highly descriptive prompt for an image generator (Gemini). Focus on composition, lighting, and cultural symbols relevant to the topic. 
-      CRITICAL: The prompt MUST be historical, visual, or ancient in nature. ABSOLUTELY NO MODERN TECHNOLOGY, NO COMPUTERS, NO PHONES, NO OFFICE SETTINGS.
-      Describe specific ancient architecture, traditional clothing, visual artifacts, and atmospheric lighting.
-    - contentPrompt: A prompt for the SVG/Text generator. Focus on the core message and data points.
-    - Output a JSON array of scene definitions.
+    CRITICAL 4-ACT NARRATIVE STRUCTURE:
+    - Act 1: Exposition & The World. Introduce the core premise, geometry, oracle, protagonist, or setting.
+    - Act 2: Rising Tension & Moral Stakes. Deepen the conflict, introduce systemic constraints, dilemmas, or escalating developments.
+    - Act 3: Crisis & Turning Point. The maximum confrontation, revelation, realization, or critical choice.
+    - Act 4: Climax, Epilogue & Closure. The definitive resolution, emotional aftermath, and final philosophical insight.
+    
+    STRICT ANTI-REPETITION & SOURCE MATERIAL ALLOCATION MANDATE:
+    - You MUST partition the story progression chronologically across all 4 scenes.
+    - UNDER NO CIRCUMSTANCES should Scene 4 loop back, rephrase, or repeat the opening premise of Scene 1.
+    - If the user provides an attached text or document:
+      - Scene 1 covers the beginning exposition.
+      - Scene 2 covers the rising tension and development.
+      - Scene 3 covers the climax and turning point.
+      - Scene 4 covers the conclusion and resolution.
+    - If the source document ends early or does NOT contain a conclusion:
+      YOU AND THE SCENE SCRIBE ARE EXPLICITLY MANDATED TO BE INVENTIVE AND CREATIVE.
+      Synthesize and craft an evocative, profound, and definitive ending for Scene 4. NEVER repeat earlier text because of missing data!
+    
+    JSON OUTPUT REQUIREMENTS:
+    - Output a JSON array of 4 scene definitions.
+    - sceneTitle: Concise, evocative title (CRITICAL: DO NOT include "Scene 1", "Slide 1", or any numerical prefixes).
+    - act: Label of the narrative phase (e.g., "Act 1: Exposition", "Act 2: Rising Tension", "Act 3: The Crisis", "Act 4: Climax & Resolution").
+    - narrativeFocus: Specific storyline developments for this scene (must not overlap with other scenes).
+    - visualPrompt: Detailed prompt for traditional/metaphorical visual background art (no modern laptops/phones).
+    - contentPrompt: Comprehensive prompt for the narrative writer, explicitly directing them to continue the plot from the prior scene and advance toward the act's objective without repeating earlier material.
   `;
 
   const contents: any[] = [{ role: 'user', parts: [{ text: `Topic: ${prompt}` }] }];
@@ -1053,7 +1395,7 @@ export const generateSlideDeck = async (
   }
 
   const planningResponse: GenerateContentResponse = await withRetry(() => ai.models.generateContent({
-    model: 'gemini-2.5-flash',
+    model: getStoredTextModel(),
     contents: contents,
     config: {
       systemInstruction: planningSystemInstruction,
@@ -1064,10 +1406,12 @@ export const generateSlideDeck = async (
           type: Type.OBJECT,
           properties: {
             sceneTitle: { type: Type.STRING },
+            act: { type: Type.STRING },
+            narrativeFocus: { type: Type.STRING },
             visualPrompt: { type: Type.STRING },
             contentPrompt: { type: Type.STRING }
           },
-          required: ["sceneTitle", "visualPrompt", "contentPrompt"]
+          required: ["sceneTitle", "act", "narrativeFocus", "visualPrompt", "contentPrompt"]
         }
       }
     }
@@ -1075,11 +1419,24 @@ export const generateSlideDeck = async (
 
   const scenes = JSON.parse(planningResponse.text.replace(/```json/g, '').replace(/```/g, '').trim());
 
-  const slides = [];
+  const slides: DiagramData[] = [];
+  const previousSummaries: string[] = [];
+
   for (let i = 0; i < scenes.length; i++) {
     const scene = scenes[i];
-    console.log(`[Kathika] Manifesting Slide ${i + 1}: ${scene.sceneTitle}`);
+    const isFinalSlide = i === scenes.length - 1;
+    console.log(`[Kathika] Manifesting Slide ${i + 1}/${scenes.length}: ${scene.sceneTitle} (${scene.act || ''})`);
     
+    const slideContext: SlideContext = {
+      slideIndex: i,
+      totalSlides: scenes.length,
+      sceneTitle: scene.sceneTitle,
+      act: scene.act,
+      narrativeFocus: scene.narrativeFocus || scene.contentPrompt,
+      isFinalSlide,
+      previousSummaries: [...previousSummaries]
+    };
+
     try {
       // We generate SVG and Background sequentially to be safe with rate limits and concurrency
       const svgData = await withRetry(() => generateSvgContent(
@@ -1087,11 +1444,16 @@ export const generateSlideDeck = async (
         style, 
         script, 
         ratio, 
-        attachment
+        attachment,
+        slideContext
       ), 2);
       
       const backgroundUrl = await generateBackgroundArt(scene.visualPrompt, style, ratio);
       
+      // Store summary of this slide to pass as context to subsequent slides
+      const slideSummary = `Slide ${i + 1} ("${scene.sceneTitle}"): ${svgData.title}. Events: ${(svgData.description || svgData.story_text || '').slice(0, 300)}...`;
+      previousSummaries.push(slideSummary);
+
       slides.push({ ...svgData, backgroundUrl, scriptType: script });
     } catch (slideError) {
       console.error(`[Kathika] Slide ${i + 1} failed:`, slideError);

@@ -9,13 +9,11 @@ async function test() {
   const ai = new GoogleGenAI({ apiKey });
   
   const models = [
-    'gemini-2.5-flash-preview-tts',
+    'gemini-3.5-flash',
+    'gemini-3.1-flash-tts-preview',
     'gemini-2.5-flash-tts',
-    'gemini-2.5-flash-lite-preview-tts',
     'gemini-2.5-flash',
     'gemini-2.5-pro',
-    'gemini-3.0-flash-preview',
-    'gemini-3.1-flash-preview',
   ];
 
   for (const model of models) {

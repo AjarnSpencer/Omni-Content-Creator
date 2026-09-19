@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import Markdown from 'react-markdown';
 import rehypeRaw from 'rehype-raw';
 import JSZip from 'jszip';
+import { saveAs } from 'file-saver';
 import { 
   ArtStyle, 
   GenerationMode,
@@ -13,7 +14,7 @@ import {
   Attachment,
   getDimensions
 } from './types';
-import { generateDiagram, generateSlideDeck, generateSpeech, getStoredApiKey, setStoredApiKey, removeStoredApiKey, mergeAudioBlobs, pcmToWav, pcmToMp3 } from './services/geminiService';
+  import { generateDiagram, generateSlideDeck, generateSpeech, getStoredApiKey, setStoredApiKey, removeStoredApiKey, mergeAudioBlobs, pcmToWav, pcmToMp3, VOICE_PRESETS, getStoredTextModel, getStoredTtsModel, setStoredTextModel, setStoredTtsModel } from './services/geminiService';
 import { createVideoFromImagesAndAudio } from './services/videoService';
 import { AgentBadge } from './components/AgentBadge';
 import { DiagramCanvas } from './components/DiagramCanvas';
@@ -42,9 +43,12 @@ import {
   Pause,
   Volume2,
   Video,
+  RotateCcw,
   FileImage,
   Loader2,
-  Palette
+  Palette,
+  Users,
+  Info
 } from 'lucide-react';
 
 const getLoreDomain = (artStyle: ArtStyle) => {
@@ -244,8 +248,16 @@ export default function App() {
   const [isInitializing, setIsInitializing] = useState(true);
   const [artStyle, setArtStyle] = useState<ArtStyle>(ArtStyle.RATTANAKOSIN);
   const [generationMode, setGenerationMode] = useState<GenerationMode>(GenerationMode.STUDIO);
-  const [script, setScript] = useState<ScriptType>(ScriptType.THAI);
+  const [script, setScript] = useState<ScriptType>(ScriptType.ENGLISH);
   const [voiceName, setVoiceName] = useState<string>('Charon');
+  const [voicePresetId, setVoicePresetId] = useState<string>('documentary_male');
+  const [customVoicePrompt, setCustomPrompt] = useState<string>(VOICE_PRESETS[0].prompt);
+  const [customPromptEnabled, setCustomPromptEnabled] = useState<boolean>(false);
+  const [applyVoiceTuning, setApplyVoiceTuning] = useState<boolean>(false);
+  const [showCollaboratorsModal, setShowCollaboratorsModal] = useState<boolean>(false);
+  const [showSettingsModal, setShowSettingsModal] = useState<boolean>(false);
+  const [textModelOverride, setTextModelOverride] = useState<string>('');
+  const [ttsModelOverride, setTtsModelOverride] = useState<string>('');
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>(AspectRatio.PORTRAIT_3_4);
   const [input, setInput] = useState('');
   const [attachment, setAttachment] = useState<Attachment & { name: string } | null>(null);
@@ -258,6 +270,8 @@ export default function App() {
   const [isCopiedMd, setIsCopiedMd] = useState(false);
   const [isShared, setIsShared] = useState(false);
   const [isGeneratingAudio, setIsGeneratingAudio] = useState(false);
+  const [audioProgressText, setAudioProgressText] = useState<string | null>(null);
+  const [audioErrorMessage, setAudioErrorMessage] = useState<string | null>(null);
   const [isGeneratingVideo, setIsGeneratingVideo] = useState(false);
   const [videoStatus, setVideoStatus] = useState<string | null>(null);
   const [videoVisualMode, setVideoVisualMode] = useState<'master' | 'bg_only'>('master');
@@ -268,11 +282,29 @@ export default function App() {
 
   const cleanTextForSpeech = (text: string) => {
     if (!text) return "";
-    // Remove "Scene X:", "Slide X:", "(Scene X of Y):" etc.
     return text
+      // Remove "Scene X:", "Slide X:", "(Scene X of Y):" etc.
       .replace(/^(Scene|Slide)\s*\d+\s*[:\-]?\s*/i, '')
       .replace(/^\(Scene\s*\d+\s*of\s*\d+\)\s*[:\-]?\s*/i, '')
       .replace(/^Scene\s*\d+\s*[:\-]?\s*/i, '')
+      // Remove markdown headings
+      .replace(/^#+\s+/gm, '')
+      // Remove markdown bold and italics
+      .replace(/\*\*([^*]+)\*\*/g, '$1')
+      .replace(/\*([^*]+)\*/g, '$1')
+      .replace(/__([^_]+)__/g, '$1')
+      .replace(/_([^_]+)_/g, '$1')
+      // Remove bullet markers
+      .replace(/^[\*\-•]\s+/gm, '')
+      // Remove backticks and code blocks
+      .replace(/```[\s\S]*?```/g, '')
+      .replace(/`([^`]+)`/g, '$1')
+      // Remove markdown links [text](url)
+      .replace(/\[([^\]]+)\]\([^\)]+\)/g, '$1')
+      // Remove XML/HTML tags
+      .replace(/<[^>]*>/g, '')
+      // Collapse whitespace
+      .replace(/\s+/g, ' ')
       .trim();
   };
 
@@ -300,91 +332,135 @@ export default function App() {
     }
   };
 
-  const handleGenerateAudio = async () => {
+  const handleGenerateAudio = async (targetMode: 'current' | 'all' = 'current') => {
     if (currentDiagrams.length === 0) return;
     setIsGeneratingAudio(true);
+    setAudioErrorMessage(null);
+    setAudioProgressText("Initializing audio...");
     
     try {
-      if (isNarrative) {
-        // Generate audio for EACH slide individually
-        const updatedDiagrams = [...currentDiagrams];
+      if (isNarrative && targetMode === 'all') {
+        // Generate audio for all slides with progressive real-time save
+        const total = currentDiagrams.length;
+        let successCount = 0;
         
-        for (let i = 0; i < updatedDiagrams.length; i++) {
-          const d = updatedDiagrams[i];
+        for (let i = 0; i < total; i++) {
+          const d = currentDiagrams[i];
           const cleanTitle = cleanTextForSpeech(d.title);
           const cleanStory = cleanTextForSpeech(d.story_text || d.final_humanized_output || d.description);
           const textToSpeak = `${cleanTitle}. ${cleanStory}`;
           
-          console.log(`[Audio] Generating speech for Slide ${i + 1}...`);
-          const { audioUrl, blob, mp3Blob, mp3Url } = await generateSpeech(textToSpeak, voiceName);
+          setAudioProgressText(`Slide ${i + 1}/${total}...`);
+          console.log(`[Audio] Generating speech for Slide ${i + 1}/${total}...`);
           
-          updatedDiagrams[i] = {
-            ...d,
-            audioUrl,
-            audioBlob: blob,
-            mp3Url,
-            mp3Blob: mp3Blob
-          };
+          try {
+            const { audioUrl, blob, mp3Blob, mp3Url } = await generateSpeech(
+              textToSpeak,
+              voiceName,
+              applyVoiceTuning ? customVoicePrompt : undefined,
+              (curr, totalParts) => {
+                setAudioProgressText(`Slide ${i + 1}/${total} (Part ${curr}/${totalParts})`);
+              }
+            );
+            
+            // Immediately save each slide's audio into state as it finishes!
+            setCurrentDiagrams(prev => {
+              const next = [...prev];
+              if (next[i]) {
+                next[i] = {
+                  ...next[i],
+                  audioUrl,
+                  audioBlob: blob,
+                  mp3Url,
+                  mp3Blob
+                };
+              }
+              return next;
+            });
+            successCount++;
+          } catch (slideErr: any) {
+            console.error(`[Audio] Failed on slide ${i + 1}:`, slideErr);
+            throw new Error(`Slide ${i + 1} failed: ${slideErr.message || 'Error generating speech segment'}. (Slides 1-${successCount} were saved).`);
+          }
           
-          // Small delay to be kind to the API
-          if (i < updatedDiagrams.length - 1) {
-            await new Promise(resolve => setTimeout(resolve, 500));
+          // Delay between slides to respect API pacing
+          if (i < total - 1) {
+            await new Promise(resolve => setTimeout(resolve, 600));
           }
         }
-        
-        setCurrentDiagrams(updatedDiagrams);
-        
-        // For narrative, we don't trigger a single download here as it's multiple files
-        // The user can download individual slides or we can provide a "Download All" later
-        alert("Audio generated for all slides in the narrative.");
       } else {
-        // Single slide for "Podcast"
-        const d = currentDiagrams[currentSlideIndex];
+        // Single slide generation (Current Slide in Narrative, or Studio single view)
+        const targetIndex = currentSlideIndex;
+        const d = currentDiagrams[targetIndex];
+        if (!d) return;
+
         const cleanTitle = cleanTextForSpeech(d.title);
         const cleanStory = cleanTextForSpeech(d.story_text || d.final_humanized_output || d.description);
         const textToSpeak = `${cleanTitle}. ${cleanStory}`;
 
-        const { audioUrl, blob, mp3Blob, mp3Url } = await generateSpeech(textToSpeak, voiceName);
+        setAudioProgressText(isNarrative ? `Slide ${targetIndex + 1}...` : "Synthesizing audio...");
+        const { audioUrl, blob, mp3Blob, mp3Url } = await generateSpeech(
+          textToSpeak,
+          voiceName,
+          applyVoiceTuning ? customVoicePrompt : undefined,
+          (curr, totalParts) => {
+            setAudioProgressText(isNarrative 
+              ? `Slide ${targetIndex + 1} (Part ${curr}/${totalParts})` 
+              : `Synthesizing (Part ${curr}/${totalParts})...`);
+          }
+        );
         
+        // Immediately persist into currentDiagrams
         setCurrentDiagrams(prev => {
           const next = [...prev];
-          next[currentSlideIndex] = {
-            ...next[currentSlideIndex],
-            audioUrl,
-            audioBlob: blob,
-            mp3Url,
-            mp3Blob: mp3Blob
-          };
+          if (next[targetIndex]) {
+            next[targetIndex] = {
+              ...next[targetIndex],
+              audioUrl,
+              audioBlob: blob,
+              mp3Url,
+              mp3Blob
+            };
+          }
           return next;
         });
 
-        // Automatically trigger download for the user
-        const link = document.createElement('a');
-        link.href = mp3Url;
-        link.download = `${currentDiagrams[currentSlideIndex].title || 'audio-podcast'}.mp3`;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
+        if (!isNarrative) {
+          // Automatically trigger download for single podcast
+          const link = document.createElement('a');
+          link.href = mp3Url;
+          link.download = `${(d.title || 'audio-podcast').replace(/[^a-zA-Z0-9_-]/g, '_')}.mp3`;
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+        }
       }
     } catch (err: any) {
       console.error('Audio generation error:', err);
-      alert(`Audio generation failed: ${err.message || 'Unknown error'}`);
+      const msg = err.message || 'Unknown audio generation error';
+      if (msg.includes('403') || msg.includes('Forbidden')) {
+        setAudioErrorMessage(`Access Forbidden (403). Please verify that your Gemini API key has access to the Gemini TTS model.`);
+      } else if (msg.includes('429') || msg.includes('RESOURCE_EXHAUSTED')) {
+        setAudioErrorMessage(`Rate limit reached (429). Completed slides have been preserved. Wait a moment and click to generate the remaining slide.`);
+      } else {
+        setAudioErrorMessage(`Audio generation notice: ${msg}`);
+      }
     } finally {
       setIsGeneratingAudio(false);
+      setAudioProgressText(null);
     }
   };
 
-
-
-  const downloadAudio = async (format: 'wav' | 'mp3' = 'wav') => {
-    if (isNarrative) {
+  const downloadAudio = async (format: 'wav' | 'mp3' = 'mp3', scope: 'current' | 'merged' = 'current') => {
+    const currentDiagram = currentDiagrams[currentSlideIndex];
+    if (scope === 'merged' && isNarrative) {
       // Merge all slide audio blobs
       const blobs = currentDiagrams.map(d => d.audioBlob).filter(Boolean) as Blob[];
       if (blobs.length === 0) return;
       
       try {
         const pcmData = await mergeAudioBlobs(blobs);
-        let mergedBlob;
+        let mergedBlob: Blob;
         try {
           mergedBlob = format === 'wav' ? pcmToWav(pcmData, 24000) : pcmToMp3(pcmData, 24000);
         } catch (e) {
@@ -395,28 +471,134 @@ export default function App() {
         const url = URL.createObjectURL(mergedBlob);
         const link = document.createElement('a');
         link.href = url;
-        link.download = `${currentDiagrams[0].title || 'narrative-audio'}.${format === 'mp3' && mergedBlob.type.includes('mpeg') ? 'mp3' : 'wav'}`;
+        link.download = `${(currentDiagrams[0]?.title || 'narrative-audio').replace(/[^a-zA-Z0-9_-]/g, '_')}.${format === 'mp3' && mergedBlob.type.includes('mpeg') ? 'mp3' : 'wav'}`;
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
         URL.revokeObjectURL(url);
       } catch (err) {
         console.error("Failed to merge audio:", err);
-        alert("Failed to merge audio slides. You can download individual slides instead.");
+        setAudioErrorMessage("Failed to merge audio slides into one file. Please download individual slides instead.");
       }
     } else {
-      const currentDiagram = currentDiagrams[currentSlideIndex];
-      const blob = format === 'wav' ? currentDiagram?.audioBlob : currentDiagram?.mp3Blob;
+      // Current slide download
+      const targetDiagram = currentDiagram || currentDiagrams[0];
+      if (!targetDiagram) return;
+      
+      if (format === 'mp3' && targetDiagram.mp3Url) {
+        const link = document.createElement('a');
+        link.href = targetDiagram.mp3Url;
+        link.download = `${(targetDiagram.title || `slide-${currentSlideIndex + 1}`).replace(/[^a-zA-Z0-9_-]/g, '_')}.mp3`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        return;
+      }
+
+      const blob = format === 'wav' ? targetDiagram.audioBlob : targetDiagram.mp3Blob;
       if (!blob) return;
       
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.download = `${currentDiagram.title || 'audio-narrative'}.${format === 'mp3' && blob.type.includes('mpeg') ? 'mp3' : 'wav'}`;
+      link.download = `${(targetDiagram.title || `slide-${currentSlideIndex + 1}`).replace(/[^a-zA-Z0-9_-]/g, '_')}.${format === 'mp3' && blob.type.includes('mpeg') ? 'mp3' : 'wav'}`;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
       URL.revokeObjectURL(url);
+    }
+  };
+
+  const [isZipping, setIsZipping] = useState(false);
+
+  const handleDownloadAllAssets = async () => {
+    if (!currentDiagrams || currentDiagrams.length === 0) return;
+    setIsZipping(true);
+    try {
+      const zip = new JSZip();
+
+      for (let i = 0; i < currentDiagrams.length; i++) {
+        const d = currentDiagrams[i];
+        
+        const slideIndex = i + 1;
+        const safeTitle = d.title ? d.title.replace(/[^a-z0-9\s]/gi, '').replace(/\s+/g, '_').substring(0, 30) : 'Slide';
+        const folderName = `Slide_${slideIndex}_${safeTitle}`;
+        const folder = zip.folder(folderName);
+        if (!folder) continue;
+
+        // MD text
+        const mdText = `# ${d.title}\n\n${d.description}\n\n${d.story_text || ''}\n\n${d.final_humanized_output || ''}`;
+        folder.file("content.md", mdText);
+
+        // SVG
+        if (d.svg) {
+          folder.file("infographic.svg", d.svg);
+        }
+
+        // Background Image
+        if (d.backgroundUrl) {
+          if (d.backgroundUrl.startsWith('data:image/')) {
+            const base64Data = d.backgroundUrl.split(',')[1];
+            folder.file("background.png", base64Data, { base64: true });
+          } else {
+            try {
+              const response = await fetch(d.backgroundUrl);
+              const blob = await response.blob();
+              folder.file("background.png", blob);
+            } catch (err) {
+              console.error("Failed to fetch background image for zipping", err);
+            }
+          }
+        }
+
+        // Audio
+        if (d.mp3Blob) {
+          folder.file("narration.mp3", d.mp3Blob);
+        } else if (d.audioBlob) {
+          folder.file("narration.wav", d.audioBlob);
+        } else if (d.mp3Url) {
+           try {
+              const response = await fetch(d.mp3Url);
+              const blob = await response.blob();
+              folder.file("narration.mp3", blob);
+            } catch (err) {
+              console.error("Failed to fetch mp3 image for zipping", err);
+            }
+        } else if (d.audioUrl) {
+           try {
+              const response = await fetch(d.audioUrl);
+              const blob = await response.blob();
+              folder.file("narration.wav", blob);
+            } catch (err) {
+              console.error("Failed to fetch audio for zipping", err);
+            }
+        }
+
+        // Video
+        if (d.videoBlob) {
+          const extension = d.videoBlob.type.includes('webm') ? 'webm' : 'mp4';
+          folder.file(`video.${extension}`, d.videoBlob);
+        } else if (d.videoUrl) {
+           try {
+              const response = await fetch(d.videoUrl);
+              const blob = await response.blob();
+              const extension = blob.type.includes('webm') ? 'webm' : 'mp4';
+              folder.file(`video.${extension}`, blob);
+            } catch (err) {
+              console.error("Failed to fetch video for zipping", err);
+            }
+        }
+      }
+
+      console.log("Generating ZIP archive...");
+      const content = await zip.generateAsync({ type: "blob" });
+      saveAs(content, "omni_content_project_assets.zip");
+      console.log("ZIP archive downloaded.");
+    } catch (error) {
+      console.error("Error creating zip file:", error);
+      alert("Failed to create ZIP package. Please try again.");
+    } finally {
+      setIsZipping(false);
     }
   };
 
@@ -803,6 +985,8 @@ export default function App() {
     if (storedKey) {
       setApiKey(storedKey);
     }
+    setTextModelOverride(getStoredTextModel());
+    setTtsModelOverride(getStoredTtsModel());
     setIsInitializing(false);
   }, []);
 
@@ -818,6 +1002,19 @@ export default function App() {
     removeStoredApiKey();
     setApiKey(null);
     setApiKeyInput('');
+  };
+
+  const handleVoiceChange = (newVoiceId: string) => {
+    setVoiceName(newVoiceId);
+  };
+
+  const handleVoicePresetChange = (newPresetId: string) => {
+    setVoicePresetId(newPresetId);
+    const preset = VOICE_PRESETS.find(p => p.id === newPresetId);
+    if (preset) {
+      setCustomPrompt(preset.prompt);
+      setVoiceName(preset.baseVoice);
+    }
   };
 
   const handleArtStyleChange = (newStyle: ArtStyle) => {
@@ -1092,17 +1289,26 @@ export default function App() {
             </p>
           </div>
 
-          <div className="p-8 rounded-3xl bg-[#1e1205] border border-rattanakosin-800 shadow-2xl space-y-6">
-            <div className="space-y-2">
-              <h2 className="text-rattanakosin-gold font-bold uppercase tracking-widest text-sm">Bring Your Own Key</h2>
-              <p className="text-rattanakosin-100/60 text-xs">
-                Enter your Google Gemini API Key to begin. Your key is stored locally on your device and never sent to our servers.
-              </p>
+          <div className="p-8 sm:p-12 rounded-3xl bg-[#1e1205] border border-rattanakosin-800 shadow-2xl space-y-6 sm:space-y-8">
+            <div className="flex justify-between items-start">
+              <div className="space-y-2 text-left">
+                <h2 className="text-rattanakosin-gold font-bold uppercase tracking-widest text-sm sm:text-base">Bring Your Own Key</h2>
+                <p className="text-rattanakosin-100/60 text-xs sm:text-sm">
+                  Enter your Google Gemini API Key to begin. Your key is stored locally entirely on your device.
+                </p>
+              </div>
+              <button 
+                onClick={() => setShowSettingsModal(true)}
+                className="w-12 h-12 shrink-0 rounded-full bg-rattanakosin-900 border border-rattanakosin-gold/30 hover:bg-rattanakosin-gold/15 flex items-center justify-center transition-colors cursor-pointer text-rattanakosin-gold"
+                title="Model Config overrides"
+              >
+                <Settings className="w-6 h-6" />
+              </button>
             </div>
             
-            <form onSubmit={handleSaveApiKey} className="space-y-4">
+            <form onSubmit={handleSaveApiKey} className="space-y-4 sm:space-y-6">
               <div className="relative">
-                <Key className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-rattanakosin-gold/50" />
+                <Key className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-rattanakosin-gold/50" />
                 <label htmlFor="apiKeyInput" className="sr-only">Gemini API Key</label>
                 <input 
                   id="apiKeyInput"
@@ -1111,27 +1317,27 @@ export default function App() {
                   placeholder="Enter Gemini API Key..."
                   value={apiKeyInput}
                   onChange={(e) => setApiKeyInput(e.target.value)}
-                  className="w-full pl-12 pr-4 py-4 rounded-xl bg-[#120a02] border border-rattanakosin-900 text-rattanakosin-50 focus:outline-none focus:ring-2 focus:ring-rattanakosin-600 transition-all placeholder-rattanakosin-900"
+                  className="w-full pl-12 pr-4 py-4 sm:py-5 rounded-xl bg-[#120a02] border border-rattanakosin-900 text-rattanakosin-50 focus:outline-none focus:ring-2 focus:ring-rattanakosin-600 transition-all placeholder-rattanakosin-900 text-sm sm:text-base"
                 />
               </div>
               <div className="grid grid-cols-1 gap-4">
                 <button 
                   type="submit"
                   disabled={!apiKeyInput.trim()}
-                  className="flex items-center justify-center gap-3 py-4 px-6 rounded-xl bg-rattanakosin-600 text-white font-bold hover:bg-rattanakosin-500 transition-all transform hover:scale-[1.02] active:scale-[0.98] shadow-xl disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="flex items-center justify-center gap-3 py-4 sm:py-5 px-6 rounded-xl bg-rattanakosin-600 text-white font-bold hover:bg-rattanakosin-500 transition-all transform hover:scale-[1.02] active:scale-[0.98] shadow-xl disabled:opacity-50 disabled:cursor-not-allowed text-sm sm:text-base uppercase tracking-widest"
                 >
-                  <Sparkles className="w-5 h-5" />
+                  <Sparkles className="w-5 h-5 sm:w-6 sm:h-6" />
                   Save API Key
                 </button>
               </div>
             </form>
 
-            <div className="pt-4 border-t border-rattanakosin-900 flex flex-col items-center gap-2">
+            <div className="pt-4 sm:pt-6 border-t border-rattanakosin-900 flex flex-col items-center gap-3 text-center">
               <a 
                 href="https://aistudio.google.com/app/apikey" 
                 target="_blank" 
                 rel="noopener noreferrer"
-                className="text-[10px] text-rattanakosin-gold hover:underline uppercase tracking-widest"
+                className="text-xs sm:text-sm text-rattanakosin-gold hover:underline uppercase tracking-widest"
               >
                 Get a free API Key from Google AI Studio
               </a>
@@ -1139,14 +1345,14 @@ export default function App() {
                 href="https://ai.google.dev/gemini-api/docs/billing" 
                 target="_blank" 
                 rel="noopener noreferrer"
-                className="text-[10px] text-rattanakosin-gold/50 hover:underline uppercase tracking-widest"
+                className="text-xs sm:text-sm text-rattanakosin-gold/50 hover:underline uppercase tracking-widest"
               >
                 Billing Documentation (Paid Tier)
               </a>
             </div>
           </div>
 
-          <p className="text-[10px] text-rattanakosin-100/30 font-mono uppercase tracking-widest">
+          <p className="text-[10px] sm:text-xs text-rattanakosin-100/30 font-mono uppercase tracking-widest">
             Created by Ajarn Spencer Littlewood • Buddha Magic Multimedia
           </p>
         </div>
@@ -1162,48 +1368,61 @@ export default function App() {
         
         <div className="flex items-center space-x-3 w-full sm:w-auto">
           <div className={`p-2 rounded-full bg-rattanakosin-600 text-white shrink-0`}>
-             <Palette className="w-6 h-6 animate-spin-slow" />
+             <Palette className="w-8 h-8 animate-spin-slow" />
           </div>
           <div className="min-w-0">
-            <h1 className={`text-xl sm:text-2xl font-bold tracking-tight font-display text-rattanakosin-gold truncate`}>
+            <h1 className={`text-2xl sm:text-3xl font-bold tracking-tight font-display text-rattanakosin-gold truncate`}>
               Omni-Content Creator
             </h1>
-            <p className="text-[9px] sm:text-[10px] opacity-70 uppercase tracking-wider font-mono max-w-xl leading-tight truncate sm:whitespace-normal">
+            <p className="text-xs sm:text-sm opacity-90 uppercase tracking-wider font-mono max-w-xl leading-tight truncate sm:whitespace-normal">
               Multilingual Geometry & Infographic Generator. Created by Ajarn Spencer Littlewood.
             </p>
           </div>
         </div>
 
-        <div className="flex items-center space-x-4 sm:space-x-6 w-full sm:w-auto justify-between sm:justify-end">
+        <div className="flex items-center space-x-4 sm:space-x-6 w-full sm:w-auto justify-between sm:justify-end flex-wrap gap-y-4">
            {/* API Key Status */}
            <div className="flex items-center gap-3 sm:gap-4 pr-3 sm:pr-4 border-r border-rattanakosin-800">
              <div className="text-right hidden xs:block">
-               <p className="text-[9px] sm:text-[10px] font-bold text-rattanakosin-gold uppercase tracking-tighter">BYOK Mode</p>
-               <p className="text-[8px] text-rattanakosin-100/50 truncate max-w-[80px] sm:max-w-[120px]">Key: •••{apiKey.slice(-4)}</p>
+               <p className="text-xs sm:text-sm font-bold text-rattanakosin-gold uppercase tracking-tighter">BYOK Mode</p>
+               <p className="text-[10px] sm:text-xs text-rattanakosin-100/70 truncate max-w-[80px] sm:max-w-[120px]">Key: •••{apiKey.slice(-4)}</p>
              </div>
-             <div className="relative group">
-               <div className="w-8 h-8 rounded-full bg-rattanakosin-900 flex items-center justify-center border border-rattanakosin-gold/30">
-                 <Settings className="w-4 h-4 text-rattanakosin-gold" />
-               </div>
+             <div className="flex items-center gap-2">
                <button 
-                 onClick={handleLogout}
-                 className="absolute -bottom-1 -right-1 p-1 bg-red-600 rounded-full text-white opacity-0 group-hover:opacity-100 transition-opacity shadow-lg"
-                 title="Clear API Key"
+                 onClick={() => setShowCollaboratorsModal(true)}
+                 className="w-10 h-10 sm:w-12 sm:h-12 rounded-full bg-rattanakosin-900 hover:bg-rattanakosin-gold/15 flex items-center justify-center border border-rattanakosin-gold/30 transition-colors cursor-pointer"
+                 title="Authors & Collaborators"
                >
-                 <LogOut className="w-2 h-2" />
+                 <Users className="w-5 h-5 sm:w-6 sm:h-6 text-rattanakosin-gold" />
                </button>
+               <div className="relative group">
+                 <button 
+                   onClick={() => setShowSettingsModal(true)}
+                   className="w-10 h-10 sm:w-12 sm:h-12 rounded-full bg-rattanakosin-900 flex items-center justify-center border border-rattanakosin-gold/30 hover:bg-rattanakosin-gold/15 transition-colors cursor-pointer"
+                   title="Model Overrides & Settings"
+                 >
+                   <Settings className="w-5 h-5 sm:w-6 sm:h-6 text-rattanakosin-gold" />
+                 </button>
+                 <button 
+                   onClick={handleLogout}
+                   className="absolute -bottom-1 -right-1 p-2 bg-red-600 rounded-full text-white opacity-0 group-hover:opacity-100 transition-opacity shadow-lg"
+                   title="Clear API Key"
+                 >
+                   <LogOut className="w-3 h-3 sm:w-4 sm:h-4" />
+                 </button>
+               </div>
              </div>
            </div>
            {/* Generation Mode Selector */}
-           <div className="flex bg-rattanakosin-900/50 p-1 rounded-full border border-rattanakosin-gold/30">
+           <div className="flex bg-rattanakosin-900/50 p-1 sm:p-1.5 rounded-full border border-rattanakosin-gold/30">
              {[
-               { id: GenerationMode.STUDIO, label: 'STUDIO', icon: <Sparkles className="w-3 h-3" /> },
-               { id: GenerationMode.NARRATIVE, label: 'NARRATIVE', icon: <BookOpen className="w-3 h-3" /> },
+               { id: GenerationMode.STUDIO, label: 'STUDIO', icon: <Sparkles className="w-4 h-4 sm:w-5 sm:h-5" /> },
+               { id: GenerationMode.NARRATIVE, label: 'NARRATIVE', icon: <BookOpen className="w-4 h-4 sm:w-5 sm:h-5" /> },
              ].map((gMode) => (
                <button
                  key={gMode.id}
                  onClick={() => handleGenerationModeChange(gMode.id)}
-                 className={`flex items-center gap-1 px-2 sm:px-4 py-1 sm:py-1.5 rounded-full text-[9px] sm:text-[10px] font-bold transition-all duration-300 ${
+                 className={`flex items-center gap-2 px-3 sm:px-5 py-2 sm:py-2.5 rounded-full text-xs sm:text-sm font-bold transition-all duration-300 ${
                    generationMode === gMode.id 
                      ? 'bg-rattanakosin-600 text-white shadow-lg' 
                      : 'text-rattanakosin-400 hover:text-rattanakosin-200'
@@ -1222,14 +1441,17 @@ export default function App() {
                id="voiceSelect"
                name="voiceSelect"
                value={voiceName}
-               onChange={(e) => setVoiceName(e.target.value)}
-               className={`appearance-none bg-rattanakosin-900/50 border border-rattanakosin-gold/30 text-rattanakosin-gold text-[9px] sm:text-[10px] font-bold px-3 sm:px-4 py-1.5 sm:py-2 pr-7 sm:pr-8 rounded-full focus:outline-none focus:ring-2 focus:ring-rattanakosin-600 transition-all cursor-pointer shadow-lg uppercase`}
+               onChange={(e) => handleVoiceChange(e.target.value)}
+               className={`appearance-none bg-rattanakosin-900/50 border border-rattanakosin-gold/30 text-rattanakosin-gold text-xs sm:text-sm font-bold px-4 sm:px-6 py-2 sm:py-3 pr-8 sm:pr-10 rounded-full focus:outline-none focus:ring-2 focus:ring-rattanakosin-600 transition-all cursor-pointer shadow-lg`}
              >
                <option value="Charon" className="bg-[#120a02] text-rattanakosin-50 uppercase">MALE (CHARON)</option>
-               <option value="Aoede" className="bg-[#120a02] text-rattanakosin-50 uppercase">FEMALE (AOEDE)</option>
+               <option value="Puck" className="bg-[#120a02] text-rattanakosin-50 uppercase">MALE (PUCK)</option>
+               <option value="Kore" className="bg-[#120a02] text-rattanakosin-50 uppercase">FEMALE (KORE)</option>
+               <option value="Fenrir" className="bg-[#120a02] text-rattanakosin-50 uppercase">MALE (FENRIR)</option>
+               <option value="Zephyr" className="bg-[#120a02] text-rattanakosin-50 uppercase">FEMALE (ZEPHYR)</option>
              </select>
-             <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 sm:px-3 text-rattanakosin-gold">
-               <svg className="fill-current h-3 w-3" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path d="M9.293 12.95l.707.707L15.657 8l-1.414-1.414L10 10.828 5.757 6.586 4.343 8z"/></svg>
+             <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-3 sm:px-4 text-rattanakosin-gold">
+               <svg className="fill-current h-4 w-4 sm:h-5 sm:w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path d="M9.293 12.95l.707.707L15.657 8l-1.414-1.414L10 10.828 5.757 6.586 4.343 8z"/></svg>
              </div>
            </div>
 
@@ -1241,7 +1463,7 @@ export default function App() {
                name="artStyleSelect"
                value={artStyle}
                onChange={(e) => handleArtStyleChange(e.target.value as ArtStyle)}
-               className={`appearance-none bg-rattanakosin-900/50 border border-rattanakosin-gold/30 text-rattanakosin-gold text-[9px] sm:text-[10px] font-bold px-3 sm:px-4 py-1.5 sm:py-2 pr-7 sm:pr-8 rounded-full focus:outline-none focus:ring-2 focus:ring-rattanakosin-600 transition-all cursor-pointer shadow-lg uppercase`}
+               className={`appearance-none bg-rattanakosin-900/50 border border-rattanakosin-gold/30 text-rattanakosin-gold text-xs sm:text-sm font-bold px-4 sm:px-6 py-2 sm:py-3 pr-8 sm:pr-10 rounded-full focus:outline-none focus:ring-2 focus:ring-rattanakosin-600 transition-all cursor-pointer shadow-lg uppercase`}
              >
                {Object.values(ArtStyle).map((style) => (
                  <option key={style} value={style} className="bg-[#120a02] text-rattanakosin-50 uppercase">
@@ -1249,8 +1471,8 @@ export default function App() {
                  </option>
                ))}
              </select>
-             <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 sm:px-3 text-rattanakosin-gold">
-               <svg className="fill-current h-3 w-3" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path d="M9.293 12.95l.707.707L15.657 8l-1.414-1.414L10 10.828 5.757 6.586 4.343 8z"/></svg>
+             <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-3 sm:px-4 text-rattanakosin-gold">
+               <svg className="fill-current h-4 w-4 sm:h-5 sm:w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path d="M9.293 12.95l.707.707L15.657 8l-1.414-1.414L10 10.828 5.757 6.586 4.343 8z"/></svg>
              </div>
            </div>
         </div>
@@ -1326,6 +1548,114 @@ export default function App() {
                     ▼
                  </div>
                </div>
+            </div>
+
+            {/* VOICE TUNING CONFIG */}
+            <div className="mb-4 border border-rattanakosin-gold/10 rounded-xl bg-[#120a02]/40 overflow-hidden">
+              <button 
+                type="button"
+                onClick={() => setCustomPromptEnabled(!customPromptEnabled)}
+                className="w-full p-3.5 flex items-center justify-between text-xs font-bold uppercase tracking-wider text-rattanakosin-gold hover:bg-rattanakosin-gold/5 transition-all text-left focus:outline-none cursor-pointer"
+              >
+                <span className="flex items-center gap-2">
+                  <Mic className="w-3.5 h-3.5 text-rattanakosin-gold animate-pulse" />
+                  Voice Tuning & Presets
+                </span>
+                <span className="text-rattanakosin-gold/50">{customPromptEnabled ? '▲ Hide' : '▼ Tune Speech'}</span>
+              </button>
+
+              {customPromptEnabled && (
+                <div className="p-4 sm:p-6 border-t border-rattanakosin-gold/10 space-y-4 sm:space-y-6 bg-[#0a0501]/80 animate-fade-in text-left">
+                  {/* OPTIONAL STYLING ACTIVATE TOGGLE */}
+                  <div className="p-4 sm:p-5 rounded-xl bg-rattanakosin-gold/5 border border-rattanakosin-gold/20 flex items-center justify-between gap-4">
+                    <div className="space-y-1 sm:space-y-1.5">
+                      <span className="block text-xs sm:text-sm font-bold text-rattanakosin-gold uppercase tracking-wider">
+                        Apply Voice Styling & Pacing
+                      </span>
+                      <span className="block text-[10px] sm:text-xs text-rattanakosin-100/50 leading-tight font-mono">
+                        {applyVoiceTuning ? "ACTIVE: Overriding with style preset prompt" : "OFF: Using standard natural voice (un-styled)"}
+                      </span>
+                    </div>
+                    <label className="relative inline-flex items-center cursor-pointer select-none">
+                      <input 
+                        type="checkbox"
+                        checked={applyVoiceTuning}
+                        onChange={(e) => {
+                          setApplyVoiceTuning(e.target.checked);
+                          // Automatically set preset to match standard if they turn styling on
+                          if (e.target.checked) {
+                            const matchingPreset = VOICE_PRESETS.find(p => p.baseVoice === voiceName);
+                            if (matchingPreset) {
+                              setVoicePresetId(matchingPreset.id);
+                              setCustomPrompt(matchingPreset.prompt);
+                            }
+                          }
+                        }}
+                        className="sr-only peer"
+                      />
+                      <div className="w-11 h-6 sm:w-14 sm:h-7 bg-[#120a02] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-rattanakosin-gold/40 after:border-rattanakosin-gold/40 after:border after:rounded-full after:h-5 after:w-5 sm:after:h-6 sm:after:w-6 after:transition-all peer-checked:bg-rattanakosin-600 peer-checked:after:bg-rattanakosin-gold border border-rattanakosin-gold/30"></div>
+                    </label>
+                  </div>
+
+                  <p className="text-[11px] sm:text-xs text-[var(--color-rattanakosin-100)]/60 leading-relaxed font-mono">
+                    Tuning presets adjust cadence, pacing, and accurate name pronunciations on top of your selected physical voice.
+                  </p>
+
+                  <div className="space-y-2 block duration-200" style={{ opacity: applyVoiceTuning ? 1 : 0.5 }}>
+                    <label htmlFor="voicePresetSelect" className="block text-xs sm:text-sm font-bold uppercase tracking-wider text-rattanakosin-100/50">
+                      Style Character Preset
+                    </label>
+                    <div className="relative">
+                      <select
+                        id="voicePresetSelect"
+                        name="voicePresetSelect"
+                        value={voicePresetId}
+                        disabled={!applyVoiceTuning}
+                        onChange={(e) => handleVoicePresetChange(e.target.value)}
+                        className="w-full p-3 sm:p-4 rounded-xl appearance-none text-sm sm:text-base font-semibold bg-[#120a02] border border-rattanakosin-900 text-rattanakosin-50 focus:outline-none focus:ring-2 focus:ring-rattanakosin-gold cursor-pointer disabled:cursor-not-allowed pr-10"
+                      >
+                        {VOICE_PRESETS.map((p) => (
+                          <option key={p.id} value={p.id} className="bg-[#120a02]">
+                            {p.name}
+                          </option>
+                        ))}
+                      </select>
+                      <div className="absolute right-4 top-3 sm:top-4 pointer-events-none opacity-50 text-rattanakosin-gold text-xs sm:text-sm">
+                        ▼
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="space-y-2 block duration-200" style={{ opacity: applyVoiceTuning ? 1 : 0.5 }}>
+                    <div className="flex items-center justify-between">
+                      <label htmlFor="voicePresetPrompt" className="block text-xs sm:text-sm font-bold uppercase tracking-wider text-rattanakosin-100/50">
+                        Pacing & Intonation Script
+                      </label>
+                      <button 
+                        type="button"
+                        disabled={!applyVoiceTuning}
+                        onClick={() => {
+                          const currentPreset = VOICE_PRESETS.find(p => p.id === voicePresetId);
+                          if (currentPreset) setCustomPrompt(currentPreset.prompt);
+                        }}
+                        className="text-[10px] sm:text-xs text-rattanakosin-gold hover:underline font-semibold cursor-pointer disabled:opacity-30 disabled:no-underline disabled:cursor-not-allowed"
+                        title="Restore preset standard instructions"
+                      >
+                        Reset Prompt
+                      </button>
+                    </div>
+                    <textarea
+                      id="voicePresetPrompt"
+                      name="voicePresetPrompt"
+                      value={customVoicePrompt}
+                      disabled={!applyVoiceTuning}
+                      onChange={(e) => setCustomPrompt(e.target.value)}
+                      className="w-full h-32 sm:h-40 p-3 sm:p-4 rounded-xl text-sm font-mono resize-none focus:outline-none focus:ring-2 focus:ring-rattanakosin-gold bg-[#120a02] border border-rattanakosin-900 text-rattanakosin-50 disabled:cursor-not-allowed"
+                      placeholder="Enter custom specifications for pronunciation, cadence, rhythm, tone or dramatic style..."
+                    />
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* TEXT INPUT AREA */}
@@ -1484,138 +1814,275 @@ export default function App() {
                 
                 {/* Unified Download Hub */}
                 <div className="mb-8 space-y-6">
-                  <div className="flex items-center gap-2 border-b border-rattanakosin-800 pb-2 mb-4">
-                    <Download className="w-4 h-4 text-rattanakosin-gold" />
-                    <h4 className="text-xs font-bold uppercase tracking-widest text-rattanakosin-gold/70">Download Hub</h4>
+                  <div className="flex items-center justify-between border-b border-rattanakosin-800 pb-2 mb-4">
+                    <div className="flex items-center gap-2">
+                      <Download className="w-5 h-5 text-rattanakosin-gold" />
+                      <h4 className="text-sm font-bold uppercase tracking-widest text-rattanakosin-gold/70">Download Hub</h4>
+                    </div>
+                    {currentDiagrams.length > 0 && (
+                      <button 
+                        onClick={handleDownloadAllAssets}
+                        disabled={isZipping}
+                        className="px-5 py-2.5 sm:px-6 sm:py-3 bg-rattanakosin-gold text-rattanakosin-950 font-bold text-xs sm:text-sm uppercase tracking-widest hover:bg-rattanakosin-300 transition-all rounded-xl flex items-center gap-2 shadow-lg disabled:opacity-50 disabled:cursor-not-allowed group"
+                      >
+                        <Download className="w-4 h-4 sm:w-5 sm:h-5 group-hover:translate-y-0.5 transition-transform" />
+                        {isZipping ? 'ZIPPING...' : 'DOWNLOAD ALL FILES (ZIP)'}
+                      </button>
+                    )}
                   </div>
 
-                  <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-6">
                     
                     {/* Visual Exports */}
-                    <div className="space-y-2">
-                      <p className="text-[9px] font-bold text-rattanakosin-100/40 uppercase tracking-tighter">Visual Exports</p>
+                    <div className="space-y-3">
+                      <p className="text-[10px] sm:text-xs font-bold text-rattanakosin-100/40 uppercase tracking-tighter">Visual Exports</p>
                       <div className="flex flex-col gap-2">
                         <button 
                           onClick={handleDownloadSVG}
-                          className="flex items-center justify-between px-4 py-2 rounded-lg bg-rattanakosin-900/50 border border-rattanakosin-800 hover:bg-rattanakosin-800 transition-all text-rattanakosin-gold group"
+                          className="flex items-center justify-between px-4 sm:px-5 py-2.5 sm:py-3 rounded-lg bg-rattanakosin-900/50 border border-rattanakosin-800 hover:bg-rattanakosin-800 transition-all text-rattanakosin-gold group"
                         >
                           <div className="flex items-center gap-2">
-                            <Download className="w-4 h-4" />
-                            <span className="text-[10px] font-bold uppercase tracking-widest">SVG Vector</span>
+                            <Download className="w-4 h-4 sm:w-5 sm:h-5" />
+                            <span className="text-xs font-bold uppercase tracking-widest">SVG Vector</span>
                           </div>
-                          <span className="text-[8px] opacity-0 group-hover:opacity-100 transition-opacity">Scalable</span>
+                          <span className="text-[10px] opacity-0 group-hover:opacity-100 transition-opacity">Scalable</span>
                         </button>
                         <button 
                           onClick={downloadPng}
-                          className="flex items-center justify-between px-4 py-2 rounded-lg bg-rattanakosin-900/50 border border-rattanakosin-800 hover:bg-rattanakosin-800 transition-all text-rattanakosin-gold group"
+                          className="flex items-center justify-between px-4 sm:px-5 py-2.5 sm:py-3 rounded-lg bg-rattanakosin-900/50 border border-rattanakosin-800 hover:bg-rattanakosin-800 transition-all text-rattanakosin-gold group"
                         >
                           <div className="flex items-center gap-2">
-                            <FileImage className="w-4 h-4" />
-                            <span className="text-[10px] font-bold uppercase tracking-widest">Master PNG</span>
+                            <FileImage className="w-4 h-4 sm:w-5 sm:h-5" />
+                            <span className="text-xs font-bold uppercase tracking-widest">Master PNG</span>
                           </div>
-                          <span className="text-[8px] opacity-0 group-hover:opacity-100 transition-opacity">Art + Text</span>
+                          <span className="text-[10px] opacity-0 group-hover:opacity-100 transition-opacity">Art + Text</span>
                         </button>
                         {currentDiagram?.backgroundUrl && (
                           <button 
                             onClick={downloadBgArt}
-                            className="flex items-center justify-between px-4 py-2 rounded-lg bg-rattanakosin-900/50 border border-rattanakosin-800 hover:bg-rattanakosin-800 transition-all text-rattanakosin-gold group"
+                            className="flex items-center justify-between px-4 sm:px-5 py-2.5 sm:py-3 rounded-lg bg-rattanakosin-900/50 border border-rattanakosin-800 hover:bg-rattanakosin-800 transition-all text-rattanakosin-gold group"
                           >
                             <div className="flex items-center gap-2">
-                              <ImageIcon className="w-4 h-4" />
-                              <span className="text-[10px] font-bold uppercase tracking-widest">BG Art Only</span>
+                              <ImageIcon className="w-4 h-4 sm:w-5 sm:h-5" />
+                              <span className="text-xs font-bold uppercase tracking-widest">BG Art Only</span>
                             </div>
-                            <span className="text-[8px] opacity-0 group-hover:opacity-100 transition-opacity">No Text</span>
+                            <span className="text-[10px] opacity-0 group-hover:opacity-100 transition-opacity">No Text</span>
                           </button>
                         )}
                       </div>
                     </div>
 
                     {/* Content Exports */}
-                    <div className="space-y-2">
-                      <p className="text-[9px] font-bold text-rattanakosin-100/40 uppercase tracking-tighter">Content & Text</p>
+                    <div className="space-y-3">
+                      <p className="text-[10px] sm:text-xs font-bold text-rattanakosin-100/40 uppercase tracking-tighter">Content & Text</p>
                       <div className="flex flex-col gap-2">
-                        <div className="flex gap-1">
+                        <div className="flex gap-2">
                           <button 
                             onClick={() => downloadDescription('md')}
-                            className="flex-1 flex items-center gap-2 px-3 py-2 rounded-lg bg-rattanakosin-900/50 border border-rattanakosin-800 hover:bg-rattanakosin-800 transition-all text-rattanakosin-gold"
+                            className="flex-1 flex items-center justify-center gap-2 px-3 py-2.5 sm:py-3 rounded-lg bg-rattanakosin-900/50 border border-rattanakosin-800 hover:bg-rattanakosin-800 transition-all text-rattanakosin-gold"
                           >
-                            <Download className="w-3 h-3" />
-                            <span className="text-[10px] font-bold uppercase tracking-widest">Markdown</span>
+                            <Download className="w-4 h-4 sm:w-5 sm:h-5" />
+                            <span className="text-xs font-bold uppercase tracking-widest">Markdown</span>
                           </button>
                           <button 
                             onClick={() => copyDescription('md')}
-                            className="px-3 py-2 rounded-lg bg-rattanakosin-900/50 border border-rattanakosin-800 hover:bg-rattanakosin-800 transition-all text-rattanakosin-gold"
+                            className="px-4 py-2.5 sm:py-3 rounded-lg bg-rattanakosin-900/50 border border-rattanakosin-800 hover:bg-rattanakosin-800 transition-all text-rattanakosin-gold"
                             title="Copy MD"
                           >
-                            {isCopiedMd ? <Check className="w-3 h-3 text-green-400" /> : <Copy className="w-3 h-3" />}
+                            {isCopiedMd ? <Check className="w-4 h-4 sm:w-5 sm:h-5 text-green-400" /> : <Copy className="w-4 h-4 sm:w-5 sm:h-5" />}
                           </button>
                         </div>
                         <button 
                           onClick={handleShare}
-                          className="flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-rattanakosin-600 hover:bg-rattanakosin-500 transition-all text-white shadow-lg"
+                          className="flex items-center justify-center gap-2 px-4 py-2.5 sm:py-3 rounded-lg bg-rattanakosin-600 hover:bg-rattanakosin-500 transition-all text-white shadow-lg"
                         >
-                          {isShared ? <Check className="w-4 h-4" /> : <Share2 className="w-4 h-4" />}
-                          <span className="text-[10px] font-bold uppercase tracking-widest">{isShared ? 'COPIED LINK' : 'SHARE CREATION'}</span>
+                          {isShared ? <Check className="w-4 h-4 sm:w-5 sm:h-5" /> : <Share2 className="w-4 h-4 sm:w-5 sm:h-5" />}
+                          <span className="text-xs font-bold uppercase tracking-widest">{isShared ? 'COPIED LINK' : 'SHARE CREATION'}</span>
                         </button>
                       </div>
                     </div>
 
                     {/* Media Exports */}
-                    <div className="space-y-2">
-                      <p className="text-[9px] font-bold text-rattanakosin-100/40 uppercase tracking-tighter">Media & Audio</p>
+                    <div className="space-y-3">
+                      <p className="text-[10px] sm:text-xs font-bold text-rattanakosin-100/40 uppercase tracking-tighter">Media & Audio</p>
                       <div className="flex flex-col gap-2">
-                        {!currentDiagram?.audioUrl ? (
-                          <button 
-                            onClick={handleGenerateAudio}
-                            disabled={isGeneratingAudio}
-                            className="flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-amber-600 hover:bg-amber-500 transition-all text-white shadow-lg disabled:opacity-50"
-                          >
-                            {isGeneratingAudio ? <Loader2 className="w-4 h-4 animate-spin" /> : <Mic className="w-4 h-4" />}
-                            <span className="text-[10px] font-bold uppercase tracking-widest">GENERATE AUDIO</span>
-                          </button>
-                        ) : (
-                          <div className="space-y-2">
-                            <div className="flex gap-1">
+                        {audioErrorMessage && (
+                          <div className="p-3 bg-red-950/80 border border-red-700/60 rounded-lg text-xs text-red-200 flex items-start justify-between gap-2 shadow-inner">
+                            <span className="leading-relaxed">{audioErrorMessage}</span>
+                            <button 
+                              onClick={() => setAudioErrorMessage(null)} 
+                              className="text-red-400 hover:text-white font-bold text-xs uppercase underline shrink-0 ml-2"
+                            >
+                              Dismiss
+                            </button>
+                          </div>
+                        )}
+
+                        {isNarrative ? (
+                          <div className="flex flex-col gap-2">
+                            {/* Slide-specific Audio */}
+                            {!currentDiagram?.audioUrl ? (
                               <button 
-                                onClick={() => downloadAudio('mp3')}
-                                className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-rattanakosin-900/50 border border-rattanakosin-800 hover:bg-rattanakosin-800 transition-all text-rattanakosin-gold"
+                                onClick={() => handleGenerateAudio('current')}
+                                disabled={isGeneratingAudio}
+                                className="flex items-center justify-center gap-2 px-4 py-2.5 sm:py-3 rounded-lg bg-amber-600 hover:bg-amber-500 transition-all text-white shadow-lg disabled:opacity-50"
                               >
-                                <Download className="w-3 h-3" />
-                                <span className="text-[10px] font-bold uppercase tracking-widest">DOWNLOAD AUDIO (MP3)</span>
+                                {isGeneratingAudio ? <Loader2 className="w-4 h-4 sm:w-5 sm:h-5 animate-spin" /> : <Mic className="w-4 h-4 sm:w-5 sm:h-5" />}
+                                <span className="text-xs font-bold uppercase tracking-widest">
+                                  {isGeneratingAudio ? (audioProgressText || 'GENERATING AUDIO...') : `GENERATE AUDIO (SLIDE ${currentSlideIndex + 1})`}
+                                </span>
                               </button>
-                            </div>
-                            {!currentDiagram?.videoUrl ? (
-                              <div className="space-y-2">
-                                <div className="flex items-center justify-between text-[10px] uppercase font-bold text-rattanakosin-gold bg-rattanakosin-900/30 p-2 rounded-lg border border-rattanakosin-800/50">
-                                  <span>Video Visuals:</span>
-                                  <select 
-                                    value={videoVisualMode} 
-                                    onChange={(e) => setVideoVisualMode(e.target.value as 'master' | 'bg_only')}
-                                    className="bg-black/50 border border-rattanakosin-800 rounded px-2 py-1 text-rattanakosin-100 focus:outline-none focus:border-rattanakosin-gold"
-                                  >
-                                    <option value="master">Infographic (Text + Art)</option>
-                                    <option value="bg_only">Background Art Only</option>
-                                  </select>
-                                </div>
-                                <button 
-                                  onClick={handleGenerateVideo}
-                                  disabled={isGeneratingVideo}
-                                  className="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-amber-600 hover:bg-amber-500 transition-all text-white shadow-lg disabled:opacity-50"
-                                >
-                                  {isGeneratingVideo ? <Loader2 className="w-4 h-4 animate-spin" /> : <Video className="w-4 h-4" />}
-                                  <span className="text-[10px] font-bold uppercase tracking-widest">GENERATE VIDEO</span>
-                                </button>
-                              </div>
                             ) : (
-                              <button 
-                                onClick={downloadVideo}
-                                className="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-green-600 hover:bg-green-500 transition-all text-white shadow-lg"
-                              >
-                                <Video className="w-4 h-4" />
-                                <span className="text-[10px] font-bold uppercase tracking-widest">DOWNLOAD VIDEO</span>
-                              </button>
+                              <div className="space-y-2">
+                                <div className="flex gap-1.5">
+                                  <button 
+                                    onClick={() => downloadAudio('mp3', 'current')}
+                                    className="flex-1 flex items-center justify-center gap-2 px-3 py-2.5 sm:py-3 rounded-lg bg-rattanakosin-900/50 border border-rattanakosin-800 hover:bg-rattanakosin-800 transition-all text-rattanakosin-gold"
+                                  >
+                                    <Download className="w-4 h-4 sm:w-5 sm:h-5" />
+                                    <span className="text-xs font-bold uppercase tracking-widest">DOWNLOAD MP3 (SLIDE {currentSlideIndex + 1})</span>
+                                  </button>
+                                  <button
+                                    onClick={() => handleGenerateAudio('current')}
+                                    disabled={isGeneratingAudio}
+                                    title="Regenerate speech for this slide"
+                                    className="px-3 py-2.5 sm:py-3 rounded-lg bg-rattanakosin-900/50 border border-rattanakosin-800 hover:bg-rattanakosin-800 transition-all text-rattanakosin-gold/70 hover:text-rattanakosin-gold disabled:opacity-50"
+                                  >
+                                    <RotateCcw className="w-4 h-4" />
+                                  </button>
+                                </div>
+                              </div>
+                            )}
+
+                            {/* Batch Narrative Audio Button */}
+                            {currentDiagrams.length > 1 && (
+                              <div className="flex flex-col gap-1.5 pt-1">
+                                <button 
+                                  onClick={() => handleGenerateAudio('all')}
+                                  disabled={isGeneratingAudio}
+                                  className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-rattanakosin-900/60 border border-amber-600/40 hover:bg-amber-900/30 hover:border-amber-500 transition-all text-amber-200 shadow disabled:opacity-50"
+                                >
+                                  {isGeneratingAudio && audioProgressText?.startsWith('Slide') ? (
+                                    <Loader2 className="w-4 h-4 animate-spin text-amber-400" />
+                                  ) : (
+                                    <Mic className="w-4 h-4 text-amber-400" />
+                                  )}
+                                  <span className="text-[11px] font-bold uppercase tracking-wider">
+                                    {isGeneratingAudio && audioProgressText?.startsWith('Slide')
+                                      ? audioProgressText
+                                      : `GENERATE ALL SLIDES AUDIO (${currentDiagrams.filter(d => d.audioUrl).length}/${currentDiagrams.length} READY)`}
+                                  </span>
+                                </button>
+                                {currentDiagrams.some(d => d.audioUrl) && (
+                                  <button 
+                                    onClick={() => downloadAudio('mp3', 'merged')}
+                                    className="w-full flex items-center justify-center gap-2 px-3 py-1.5 rounded-lg bg-rattanakosin-950/40 border border-rattanakosin-800/60 hover:bg-rattanakosin-800/40 transition-all text-rattanakosin-gold/80 hover:text-rattanakosin-gold text-[10px] font-bold uppercase tracking-wider"
+                                  >
+                                    <Download className="w-3.5 h-3.5" />
+                                    <span>DOWNLOAD ALL SLIDES (MERGED MP3)</span>
+                                  </button>
+                                )}
+                              </div>
+                            )}
+
+                            {/* Video Section for Current Slide */}
+                            {currentDiagram?.audioUrl && (
+                              !currentDiagram?.videoUrl ? (
+                                <div className="space-y-2 pt-2 border-t border-rattanakosin-800/50">
+                                  <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-1 sm:gap-2 text-[10px] sm:text-xs uppercase font-bold text-rattanakosin-gold bg-rattanakosin-900/30 p-2 sm:p-3 rounded-lg border border-rattanakosin-800/50">
+                                    <span>Video Visuals:</span>
+                                    <select 
+                                      value={videoVisualMode} 
+                                      onChange={(e) => setVideoVisualMode(e.target.value as 'master' | 'bg_only')}
+                                      className="bg-black/50 border border-rattanakosin-800 rounded px-2 py-1.5 text-rattanakosin-100 focus:outline-none focus:border-rattanakosin-gold w-full sm:w-auto"
+                                    >
+                                      <option value="master">Infographic (Text + Art)</option>
+                                      <option value="bg_only">Background Art Only</option>
+                                    </select>
+                                  </div>
+                                  <button 
+                                    onClick={handleGenerateVideo}
+                                    disabled={isGeneratingVideo}
+                                    className="w-full flex items-center justify-center gap-2 px-4 py-2.5 sm:py-3 rounded-lg bg-amber-600 hover:bg-amber-500 transition-all text-white shadow-lg disabled:opacity-50"
+                                  >
+                                    {isGeneratingVideo ? <Loader2 className="w-4 h-4 sm:w-5 sm:h-5 animate-spin" /> : <Video className="w-4 h-4 sm:w-5 sm:h-5" />}
+                                    <span className="text-xs font-bold uppercase tracking-widest">GENERATE VIDEO</span>
+                                  </button>
+                                </div>
+                              ) : (
+                                <button 
+                                  onClick={downloadVideo}
+                                  className="w-full flex items-center justify-center gap-2 px-4 py-2.5 sm:py-3 rounded-lg bg-green-600 hover:bg-green-500 transition-all text-white shadow-lg"
+                                >
+                                  <Video className="w-4 h-4 sm:w-5 sm:h-5" />
+                                  <span className="text-xs font-bold uppercase tracking-widest">DOWNLOAD VIDEO</span>
+                                </button>
+                              )
                             )}
                           </div>
+                        ) : (
+                          // Studio / Single View
+                          !currentDiagram?.audioUrl ? (
+                            <button 
+                              onClick={() => handleGenerateAudio('current')}
+                              disabled={isGeneratingAudio}
+                              className="flex items-center justify-center gap-2 px-4 py-2.5 sm:py-3 rounded-lg bg-amber-600 hover:bg-amber-500 transition-all text-white shadow-lg disabled:opacity-50"
+                            >
+                              {isGeneratingAudio ? <Loader2 className="w-4 h-4 sm:w-5 sm:h-5 animate-spin" /> : <Mic className="w-4 h-4 sm:w-5 sm:h-5" />}
+                              <span className="text-xs font-bold uppercase tracking-widest">{isGeneratingAudio ? (audioProgressText || 'GENERATING AUDIO...') : 'GENERATE AUDIO'}</span>
+                            </button>
+                          ) : (
+                            <div className="space-y-2">
+                              <div className="flex gap-1.5">
+                                <button 
+                                  onClick={() => downloadAudio('mp3', 'current')}
+                                  className="flex-1 flex items-center justify-center gap-2 px-3 py-2.5 sm:py-3 rounded-lg bg-rattanakosin-900/50 border border-rattanakosin-800 hover:bg-rattanakosin-800 transition-all text-rattanakosin-gold"
+                                >
+                                  <Download className="w-4 h-4 sm:w-5 sm:h-5" />
+                                  <span className="text-xs font-bold uppercase tracking-widest">DOWNLOAD AUDIO (MP3)</span>
+                                </button>
+                                <button
+                                  onClick={() => handleGenerateAudio('current')}
+                                  disabled={isGeneratingAudio}
+                                  title="Regenerate speech"
+                                  className="px-3 py-2.5 sm:py-3 rounded-lg bg-rattanakosin-900/50 border border-rattanakosin-800 hover:bg-rattanakosin-800 transition-all text-rattanakosin-gold/70 hover:text-rattanakosin-gold disabled:opacity-50"
+                                >
+                                  <RotateCcw className="w-4 h-4" />
+                                </button>
+                              </div>
+                              {!currentDiagram?.videoUrl ? (
+                                <div className="space-y-2">
+                                  <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-1 sm:gap-2 text-[10px] sm:text-xs uppercase font-bold text-rattanakosin-gold bg-rattanakosin-900/30 p-2 sm:p-3 rounded-lg border border-rattanakosin-800/50">
+                                    <span>Video Visuals:</span>
+                                    <select 
+                                      value={videoVisualMode} 
+                                      onChange={(e) => setVideoVisualMode(e.target.value as 'master' | 'bg_only')}
+                                      className="bg-black/50 border border-rattanakosin-800 rounded px-2 py-1.5 text-rattanakosin-100 focus:outline-none focus:border-rattanakosin-gold w-full sm:w-auto"
+                                    >
+                                      <option value="master">Infographic (Text + Art)</option>
+                                      <option value="bg_only">Background Art Only</option>
+                                    </select>
+                                  </div>
+                                  <button 
+                                    onClick={handleGenerateVideo}
+                                    disabled={isGeneratingVideo}
+                                    className="w-full flex items-center justify-center gap-2 px-4 py-2.5 sm:py-3 rounded-lg bg-amber-600 hover:bg-amber-500 transition-all text-white shadow-lg disabled:opacity-50"
+                                  >
+                                    {isGeneratingVideo ? <Loader2 className="w-4 h-4 sm:w-5 sm:h-5 animate-spin" /> : <Video className="w-4 h-4 sm:w-5 sm:h-5" />}
+                                    <span className="text-xs font-bold uppercase tracking-widest">GENERATE VIDEO</span>
+                                  </button>
+                                </div>
+                              ) : (
+                                <button 
+                                  onClick={downloadVideo}
+                                  className="w-full flex items-center justify-center gap-2 px-4 py-2.5 sm:py-3 rounded-lg bg-green-600 hover:bg-green-500 transition-all text-white shadow-lg"
+                                >
+                                  <Video className="w-4 h-4 sm:w-5 sm:h-5" />
+                                  <span className="text-xs font-bold uppercase tracking-widest">DOWNLOAD VIDEO</span>
+                                </button>
+                              )}
+                            </div>
+                          )
                         )}
                       </div>
                     </div>
@@ -1649,6 +2116,150 @@ export default function App() {
             )}
           </div>
         </main>
+
+      {/* Advanced Settings Modal */}
+      {showSettingsModal && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/85 backdrop-blur-sm">
+          <div className="relative w-full max-w-lg p-6 sm:p-8 rounded-2xl bg-[#1e1205] border border-rattanakosin-gold/30 shadow-2xl text-left space-y-6">
+            <button 
+              onClick={() => {
+                setStoredTextModel(textModelOverride || 'gemini-2.5-flash');
+                setStoredTtsModel(ttsModelOverride || 'gemini-3.1-flash-tts-preview');
+                setShowSettingsModal(false);
+              }}
+              className="absolute top-4 right-4 p-2 rounded-full bg-[#120a02] hover:bg-rattanakosin-gold/10 text-rattanakosin-gold hover:text-white transition-all cursor-pointer"
+            >
+              <X className="w-5 h-5 sm:w-6 sm:h-6" />
+            </button>
+            
+            <div className="flex items-center gap-4 border-b border-rattanakosin-gold/10 pb-4">
+              <div className="p-3 rounded-full bg-rattanakosin-900 border border-rattanakosin-gold/20">
+                <Settings className="w-8 h-8 text-rattanakosin-gold" />
+              </div>
+              <div>
+                <h2 className="text-xl sm:text-2xl font-bold font-display text-rattanakosin-gold tracking-tight">Model Config</h2>
+                <p className="text-[10px] sm:text-xs uppercase tracking-widest text-rattanakosin-100/50 font-mono">Future-Proof AI Engine Overrides</p>
+              </div>
+            </div>
+
+            <div className="space-y-6">
+              <div className="space-y-2">
+                <label className="block text-xs sm:text-sm font-bold uppercase tracking-wider text-rattanakosin-gold">Text & Logic Model (Brain)</label>
+                <input 
+                  type="text"
+                  value={textModelOverride}
+                  onChange={(e) => setTextModelOverride(e.target.value)}
+                  className="w-full px-4 py-3 rounded-xl bg-[#120a02] border border-rattanakosin-900 text-rattanakosin-50 focus:outline-none focus:ring-2 focus:ring-rattanakosin-gold font-mono text-sm sm:text-base border-2"
+                  placeholder="e.g. gemini-2.5-flash"
+                />
+                <p className="text-xs text-rattanakosin-100/50">Overrides the core model used for generation, logic, and reasoning.</p>
+              </div>
+
+              <div className="space-y-2">
+                <label className="block text-xs sm:text-sm font-bold uppercase tracking-wider text-rattanakosin-gold">Text-To-Speech Model (Voice)</label>
+                <input 
+                  type="text"
+                  value={ttsModelOverride}
+                  onChange={(e) => setTtsModelOverride(e.target.value)}
+                  className="w-full px-4 py-3 rounded-xl bg-[#120a02] border border-rattanakosin-900 text-rattanakosin-50 focus:outline-none focus:ring-2 focus:ring-rattanakosin-gold font-mono text-sm sm:text-base border-2"
+                  placeholder="e.g. gemini-3.1-flash-tts-preview"
+                />
+                <p className="text-xs text-rattanakosin-100/50">Native text-to-speech model. Default: <span className="text-white font-mono">gemini-3.1-flash-tts-preview</span>.</p>
+              </div>
+            </div>
+
+            <div className="pt-4 border-t border-rattanakosin-gold/10 flex justify-end">
+              <button 
+                onClick={() => {
+                  setStoredTextModel(textModelOverride || 'gemini-2.5-flash');
+                  setStoredTtsModel(ttsModelOverride || 'gemini-3.1-flash-tts-preview');
+                  setShowSettingsModal(false);
+                }}
+                className="px-6 py-3 rounded-xl bg-rattanakosin-600 hover:bg-rattanakosin-500 transition-colors text-white font-bold text-xs sm:text-sm uppercase tracking-widest cursor-pointer shadow-lg"
+              >
+                Save & Apply
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Authors & Collaborators Modal */}
+      {showCollaboratorsModal && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/85 backdrop-blur-sm">
+          <div className="relative w-full max-w-xl p-8 rounded-2xl bg-[#1e1205] border border-rattanakosin-gold/30 shadow-2xl text-left space-y-6 max-h-[85vh] overflow-y-auto">
+            <button 
+              onClick={() => setShowCollaboratorsModal(false)}
+              className="absolute top-4 right-4 p-2 rounded-full bg-[#120a02] hover:bg-rattanakosin-gold/10 text-rattanakosin-gold hover:text-white transition-all cursor-pointer"
+              title="Close Dialog"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="flex items-center gap-3 pb-4 border-b border-rattanakosin-gold/10">
+              <div className="p-2 rounded-full bg-rattanakosin-600 text-white shadow-md">
+                <Users className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="text-xl font-bold font-display text-rattanakosin-gold">Authors & Collaborators</h3>
+                <p className="text-[10px] font-mono tracking-wider uppercase text-rattanakosin-100/40">Credits & Attribution Portal</p>
+              </div>
+            </div>
+
+            <div className="space-y-4">
+              {/* Primary Author */}
+              <div className="space-y-2">
+                <p className="text-xs font-mono font-bold uppercase tracking-widest text-rattanakosin-gold/60">Primary Author & Visionary</p>
+                <div className="p-4 rounded-xl bg-[#120a02] border border-rattanakosin-gold/15 space-y-2">
+                  <h4 className="text-sm font-bold text-rattanakosin-gold">Ajarn Spencer Littlewood</h4>
+                  <p className="text-xs text-rattanakosin-100/70 leading-relaxed">
+                    Scholarly research, art direction, and publisher of 
+                    <a href="https://www.buddhamagic.net" target="_blank" rel="noopener noreferrer" className="mx-1 text-rattanakosin-gold hover:underline">Buddha Magic Multimedia and Publications</a>. 
+                    Specialist in traditional aesthetics, ancient alphabets, and sacred designs.
+                  </p>
+                  <div className="flex flex-wrap gap-x-4 gap-y-2 pt-1 text-[10px] font-mono">
+                    <a href="https://www.ajarnspencer.com" target="_blank" rel="noopener noreferrer" className="text-rattanakosin-gold hover:underline flex items-center gap-1">
+                      🌐 ajarnspencer.com
+                    </a>
+                    <a href="https://github.com/AjarnSpencer" target="_blank" rel="noopener noreferrer" className="text-rattanakosin-gold hover:underline flex items-center gap-1">
+                      🐙 GitHub Profile
+                    </a>
+                  </div>
+                </div>
+              </div>
+
+              {/* Technologies & Open-Source Collaborations */}
+              <div className="space-y-2">
+                <p className="text-xs font-mono font-bold uppercase tracking-widest text-rattanakosin-gold/60">Open Source Collaborations & Solutions</p>
+                <div className="p-4 rounded-xl bg-[#120a02]/60 border border-rattanakosin-gold/5 space-y-3 text-xs text-rattanakosin-100/80">
+                  <p className="leading-relaxed text-[11px] text-rattanakosin-100/60">
+                    This offline-ready premium application brings together cutting-edge web engineering and artificial intelligence utilities, powered by the following free open-source achievements:
+                  </p>
+                  <ul className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[10px] sm:text-[11px] font-mono pt-1 text-rattanakosin-100/70">
+                    <li className="flex items-center gap-1.5"><span className="text-rattanakosin-gold">✦</span> React 18 & Vite</li>
+                    <li className="flex items-center gap-1.5"><span className="text-rattanakosin-gold">✦</span> Tailwind CSS</li>
+                    <li className="flex items-center gap-1.5"><span className="text-rattanakosin-gold">✦</span> @google/genai</li>
+                    <li className="flex items-center gap-1.5"><span className="text-rattanakosin-gold">✦</span> JSZip Compressor</li>
+                    <li className="flex items-center gap-1.5"><span className="text-rattanakosin-gold">✦</span> Lucide-React Icons</li>
+                    <li className="flex items-center gap-1.5"><span className="text-rattanakosin-gold">✦</span> Recharts & D3</li>
+                    <li className="flex items-center gap-1.5"><span className="text-rattanakosin-gold">✦</span> LameJS MP3 Studio</li>
+                    <li className="flex items-center gap-1.5"><span className="text-rattanakosin-gold">✦</span> Framer Motion Hooks</li>
+                  </ul>
+                </div>
+              </div>
+            </div>
+
+            <div className="pt-4 border-t border-rattanakosin-gold/10 flex justify-end">
+              <button 
+                onClick={() => setShowCollaboratorsModal(false)}
+                className="px-5 py-2.5 rounded-lg bg-rattanakosin-600 hover:bg-rattanakosin-500 transition-colors text-white font-bold text-xs uppercase tracking-widest cursor-pointer shadow-lg animate-pulse"
+              >
+                Close Portal
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Footer Credits */}
       <footer className="w-full border-t border-rattanakosin-800 bg-[#1a1005] py-6 px-4 text-center z-10 relative">
