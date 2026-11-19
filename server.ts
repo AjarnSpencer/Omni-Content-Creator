@@ -10,14 +10,20 @@ async function startServer() {
 
   app.post('/api/gemini/generateContent', async (req, res) => {
     try {
-      // The AI Studio environment automatically injects API_KEY
-      // When deployed, you will provide your own paid API key in the environment variables
-      const apiKey = process.env.API_KEY || process.env.GEMINI_API_KEY;
+      const apiKey = process.env.GEMINI_API_KEY || process.env.API_KEY;
       if (!apiKey) {
-        return res.status(500).json({ error: 'API_KEY is not set on the server.' });
+        return res.status(500).json({ error: 'GEMINI_API_KEY is not configured on the server. Please check Settings > Secrets.' });
       }
       
-      const ai = new GoogleGenAI({ apiKey });
+      const ai = new GoogleGenAI({
+        apiKey,
+        apiVersion: 'v1beta',
+        httpOptions: {
+          headers: {
+            'User-Agent': 'aistudio-build',
+          },
+        },
+      });
       const { model, contents, config } = req.body;
       
       const response = await ai.models.generateContent({
@@ -29,9 +35,10 @@ async function startServer() {
       res.json(response);
     } catch (error: any) {
       console.error('Gemini API Error:', error);
-      res.status(error.status || 500).json({ 
+      const status = error.status || error.statusCode || 500;
+      res.status(status).json({ 
         error: error.message || 'An error occurred during generation',
-        status: error.status
+        status
       });
     }
   });
@@ -39,14 +46,14 @@ async function startServer() {
   if (process.env.NODE_ENV !== 'production') {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: { middlewareMode: true, hmr: false },
       appType: 'spa',
     });
     app.use(vite.middlewares);
   } else {
     const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
-    app.get('*all', (req, res) => {
+    app.use((req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }

@@ -1,32 +1,115 @@
 
-import { GoogleGenAI, Type, GenerateContentResponse, Modality, HarmCategory, HarmBlockThreshold } from "@google/genai";
 import { ArtStyle, ScriptType, AspectRatio, getDimensions, DiagramData, Attachment, VoiceType } from '../types';
-
-const API_KEY_STORAGE_KEY = 'omni_content_api_key';
-
-export const getStoredApiKey = () => localStorage.getItem(API_KEY_STORAGE_KEY);
-export const setStoredApiKey = (key: string) => localStorage.setItem(API_KEY_STORAGE_KEY, key);
-export const removeStoredApiKey = () => localStorage.removeItem(API_KEY_STORAGE_KEY);
+import {
+  IMAGE_GENERATION_TIER,
+  TTS_AUDIO_TIER,
+  TEXT_GENERATION_TIER,
+  executeTierWithFailover
+} from './modelOrchestrator';
 
 const TTS_MODEL_STORAGE_KEY = 'gemini_tts_model_name';
-export const getStoredTtsModel = () => localStorage.getItem(TTS_MODEL_STORAGE_KEY) || 'gemini-3.1-flash-tts-preview';
+const TEXT_MODEL_STORAGE_KEY = 'gemini_text_model_name';
+
+export const DEFAULT_TEXT_MODEL = 'gemini-4-hydrogen';
+export const DEFAULT_TTS_MODEL = 'auto';
+export const DEFAULT_IMAGE_MODEL = 'gemini-3-pro-image';
+
+export const SUPPORTED_TEXT_MODELS = [
+  { id: 'gemini-4-hydrogen', name: 'Gemini 4 Hydrogen (Fast & Intelligent - Recommended)' },
+  { id: 'gemini-4-argon', name: 'Gemini 4 Argon (Complex Reasoning & Multi-Step Tasks)' },
+  { id: 'gemini-4-carbon', name: 'Gemini 4 Carbon (Deep Reasoning & Architecture)' },
+  { id: 'gemini-3.8-flash', name: 'Gemini 3.8 Flash' }
+];
+
+export const SUPPORTED_TTS_MODELS = [
+  { id: 'auto', name: 'Smart Adaptive Audio (Gemini 3.8 Flash Lite TTS + Automatic Failover)' },
+  { id: 'gemini-3.8-flash-lite-tts', name: 'Gemini 3.8 Flash Lite TTS (High-Efficiency Official Voice)' },
+  { id: 'gemini-3.8-flash-tts', name: 'Gemini 3.8 Flash TTS (Flagship Voice Design & Screenplay)' }
+];
+
+const DEPRECATED_TEXT_MODELS = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-pro', 'gemini-2.0-flash', 'gemini-2.0-pro', 'gemini-2.5-flash', 'gemini-2.5-pro'];
+const DEPRECATED_TTS_MODELS = ['local-voice', 'gemini-2.0-flash', 'gemini-2.5-flash', 'gemini-3.1-flash-tts-preview', 'gemini-2.5-flash-tts', 'gemini-1.5-flash-tts'];
+
+export const getStoredTtsModel = () => {
+  const model = localStorage.getItem(TTS_MODEL_STORAGE_KEY);
+  if (!model || DEPRECATED_TTS_MODELS.includes(model)) {
+    localStorage.setItem(TTS_MODEL_STORAGE_KEY, DEFAULT_TTS_MODEL);
+    return DEFAULT_TTS_MODEL;
+  }
+  return model;
+};
 export const setStoredTtsModel = (model: string) => localStorage.setItem(TTS_MODEL_STORAGE_KEY, model);
 
-const DEFAULT_TEXT_MODEL = 'gemini-2.5-flash';
-const TEXT_MODEL_STORAGE_KEY = 'gemini_text_model_name';
-export const getStoredTextModel = () => localStorage.getItem(TEXT_MODEL_STORAGE_KEY) || DEFAULT_TEXT_MODEL;
+export const getStoredTextModel = () => {
+  const model = localStorage.getItem(TEXT_MODEL_STORAGE_KEY);
+  if (!model || DEPRECATED_TEXT_MODELS.includes(model)) {
+    localStorage.setItem(TEXT_MODEL_STORAGE_KEY, DEFAULT_TEXT_MODEL);
+    return DEFAULT_TEXT_MODEL;
+  }
+  return model;
+};
 export const setStoredTextModel = (model: string) => localStorage.setItem(TEXT_MODEL_STORAGE_KEY, model);
 
+export const Type = {
+  STRING: 'STRING',
+  NUMBER: 'NUMBER',
+  INTEGER: 'INTEGER',
+  BOOLEAN: 'BOOLEAN',
+  ARRAY: 'ARRAY',
+  OBJECT: 'OBJECT',
+} as const;
 
-const getAiClient = () => {
-  // Prefer the manually stored key if the user provided one.
-  // Otherwise, fallback to the platform-injected API key.
-  const apiKey = getStoredApiKey() || (process.env as any).API_KEY || (process.env as any).GEMINI_API_KEY;
-  if (!apiKey) {
-    // We'll handle the UI prompt in the component, but we still need to throw here if called without a key
-    throw new Error("API_KEY_REQUIRED");
+export const Modality = {
+  AUDIO: 'AUDIO',
+  TEXT: 'TEXT',
+  IMAGE: 'IMAGE',
+} as const;
+
+export interface GenerateContentResponse {
+  candidates?: Array<{
+    content?: {
+      parts?: Array<{
+        text?: string;
+        inlineData?: {
+          mimeType: string;
+          data: string;
+        };
+      }>;
+    };
+    finishReason?: string;
+  }>;
+  text?: string;
+}
+
+export const callServerGenerateContent = async (params: {
+  model: string;
+  contents: any;
+  config?: any;
+}): Promise<GenerateContentResponse> => {
+  const response = await fetch('/api/gemini/generateContent', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(params),
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    const message = errorData.error || `Server request failed with status ${response.status}`;
+    const err: any = new Error(message);
+    err.status = errorData.status || response.status;
+    throw err;
   }
-  return new GoogleGenAI({ apiKey });
+
+  const data: GenerateContentResponse = await response.json();
+  if (!data.text && data.candidates?.[0]?.content?.parts) {
+    const textPart = data.candidates[0].content.parts.find((p: any) => p.text);
+    if (textPart) {
+      data.text = textPart.text;
+    }
+  }
+  return data;
 };
 
 const withRetry = async <T>(fn: () => Promise<T>, retries = 5, delay = 2000): Promise<T> => {
@@ -56,10 +139,7 @@ const withRetry = async <T>(fn: () => Promise<T>, retries = 5, delay = 2000): Pr
       return withRetry(fn, retries - 1, baseDelay * 1.5);
     }
     
-    if (error.status === 403 || error.message?.includes('403') || error.message?.includes('Forbidden')) {
-      throw new Error(`Access Forbidden (403). This usually means your API Key is restricted, has insufficient permissions for this model, or your region is not supported. Original error: ${error.message}`);
-    }
-
+    // Pass original error through so calling services can handle model-specific and local fallbacks
     throw error;
   }
 };
@@ -111,11 +191,43 @@ const getScriptInstructions = (script: ScriptType): string => {
   }
 };
 
-export const generateBackgroundArt = async (prompt: string, style: ArtStyle, ratio: AspectRatio): Promise<string | undefined> => {
-  const ai = getAiClient();
-  // Falling back to gemini-2.5-flash-image for stable image generation
-  const model = 'gemini-2.5-flash-image';
-  
+export const createThematicFallbackImage = (style: ArtStyle, ratio: AspectRatio): string => {
+  const { width, height } = getDimensions(ratio);
+  const isThai = style === ArtStyle.RATTANAKOSIN || style === ArtStyle.AYUTTHAYA || style === ArtStyle.SUKHOTHAI;
+  const primaryBg = isThai ? '#1c0f08' : '#140c08';
+  const secondaryBg = isThai ? '#2a150c' : '#1e110b';
+  const gold = '#d4af37';
+  const deepGold = '#996515';
+
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
+    <defs>
+      <radialGradient id="bgGrad" cx="50%" cy="50%" r="70%">
+        <stop offset="0%" stop-color="${secondaryBg}"/>
+        <stop offset="100%" stop-color="${primaryBg}"/>
+      </radialGradient>
+      <pattern id="motif" width="120" height="120" patternUnits="userSpaceOnUse">
+        <path d="M60 15 L75 45 L105 60 L75 75 L60 105 L45 75 L15 60 L45 45 Z" fill="none" stroke="${gold}" stroke-width="0.8" opacity="0.12"/>
+        <circle cx="60" cy="60" r="10" fill="none" stroke="${gold}" stroke-width="0.6" opacity="0.15"/>
+      </pattern>
+    </defs>
+    <rect width="${width}" height="${height}" fill="url(#bgGrad)"/>
+    <rect width="${width}" height="${height}" fill="url(#motif)"/>
+    <!-- Ornate Double Border -->
+    <rect x="24" y="24" width="${width - 48}" height="${height - 48}" fill="none" stroke="${gold}" stroke-width="4" opacity="0.85"/>
+    <rect x="36" y="36" width="${width - 72}" height="${height - 72}" fill="none" stroke="${deepGold}" stroke-width="1.5" opacity="0.65"/>
+    <!-- Corner Accents -->
+    <g stroke="${gold}" stroke-width="2.5" fill="none" opacity="0.9">
+      <path d="M 24 90 L 90 24 M 24 120 L 120 24 M 36 75 L 75 36"/>
+      <path d="M ${width - 24} 90 L ${width - 90} 24 M ${width - 24} 120 L ${width - 120} 24 M ${width - 36} 75 L ${width - 75} 36"/>
+      <path d="M 24 ${height - 90} L 90 ${height - 24} M 24 ${height - 120} L 120 ${height - 24} M 36 ${height - 75} L 75 ${height - 36}"/>
+      <path d="M ${width - 24} ${height - 90} L ${width - 90} ${height - 24} M ${width - 24} ${height - 120} L ${width - 120} ${height - 24} M ${width - 36} ${height - 75} L ${width - 75} ${height - 36}"/>
+    </g>
+  </svg>`;
+
+  return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
+};
+
+export const generateBackgroundArt = async (prompt: string, style: ArtStyle, ratio: AspectRatio): Promise<string> => {
   console.log(`[Artisan] Manifesting background for style: ${style} with prompt: ${prompt}`);
 
   const ancientStyleDirectives = "CRITICAL: NO MODERN TECHNOLOGY. NO COMPUTERS. NO PHONES. NO MODERN PHOTOGRAPHY. NO REALISTIC HUMAN EYES. MUST BE TRADITIONAL ART ONLY.";
@@ -578,48 +690,50 @@ export const generateBackgroundArt = async (prompt: string, style: ArtStyle, rat
   5. UNICODE SUPPORT: If the prompt contains specific script characters (Tibetan, Devanagari, Khmer, etc.), ensure the visual elements reflect the aesthetic of those cultures accurately.
   `;
 
-  try {
-    const response: GenerateContentResponse = await withRetry(() => ai.models.generateContent({
-      model,
-      contents: {
-        parts: [{ 
-          text: `${stylePrompt}
-          Subject: ${prompt}.
-          ${globalArtDirectives}` 
-        }]
-      },
-      config: { 
-        imageConfig: { 
-          aspectRatio: ratio
-        }
-      }
-    }));
+  const fullPrompt = `${stylePrompt}
+  Subject: ${prompt}.
+  ${globalArtDirectives}`;
 
-    const candidates = response.candidates;
-    if (candidates && candidates.length > 0) {
-      const candidate = candidates[0];
-      if (candidate.finishReason === 'SAFETY') {
-        console.warn("[Artisan] Safety block detected. Candidates:", JSON.stringify(candidates));
-      }
-      
-      if (candidate.content?.parts) {
-        for (const part of candidate.content.parts) {
-          if (part.inlineData) {
-            return `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
+  try {
+    const { result } = await executeTierWithFailover(
+      'Image Generation',
+      IMAGE_GENERATION_TIER,
+      async (trialModel: string) => {
+        const response: GenerateContentResponse = await withRetry(() => callServerGenerateContent({
+          model: trialModel,
+          contents: {
+            parts: [{ 
+              text: fullPrompt 
+            }]
+          },
+          config: { 
+            imageConfig: { 
+              aspectRatio: ratio
+            }
+          }
+        }), 2);
+
+        const candidate = response.candidates?.[0];
+        if (candidate?.finishReason === 'SAFETY') {
+          console.warn("[Artisan] Safety notice on model:", trialModel);
+        }
+        
+        if (candidate?.content?.parts) {
+          for (const part of candidate.content.parts) {
+            if (part.inlineData?.data) {
+              return `data:${part.inlineData.mimeType || 'image/png'};base64,${part.inlineData.data}`;
+            }
           }
         }
+        
+        throw new Error(`Model ${trialModel} returned response without image data`);
       }
-    }
-    
-    console.warn("[Artisan] No image data in response. Using high-quality art fallback.");
-    const seed = Math.floor(Math.random() * 1000000);
-    const { width, height } = getDimensions(ratio);
-    return `https://picsum.photos/seed/${seed}/${width}/${height}?blur=1`;
-  } catch (e) {
-    console.warn("Background generation failed, using fallback:", e);
-    const seed = Math.floor(Math.random() * 1000000);
-    const { width, height } = getDimensions(ratio);
-    return `https://picsum.photos/seed/${seed}/${width}/${height}?blur=1`;
+    );
+
+    return result;
+  } catch (e: any) {
+    console.warn("[Artisan] Image generation tier failed. Rendering authentic thematic art canvas:", e.message || e);
+    return createThematicFallbackImage(style, ratio);
   }
 };
 
@@ -909,28 +1023,70 @@ export const chunkTextForTTS = (text: string, maxChunkLength: number = 1800): st
   return chunks.length > 0 ? chunks : [sanitized];
 };
 
+/**
+ * Directly speaks text aloud using the browser's Web Speech API in native accent/voice
+ */
+export const speakTextAloud = (text: string, voiceName?: string): void => {
+  if (typeof window === 'undefined' || !window.speechSynthesis) return;
+  window.speechSynthesis.cancel();
+  const sanitized = sanitizeForTTS(text);
+  if (!sanitized) return;
+
+  const utterance = new SpeechSynthesisUtterance(sanitized);
+  utterance.rate = 0.95;
+  utterance.pitch = (voiceName === 'Kore' || voiceName === 'Zephyr') ? 1.15 : 0.9;
+
+  const voices = window.speechSynthesis.getVoices();
+  if (voices.length > 0) {
+    const isFemale = voiceName === 'Kore' || voiceName === 'Zephyr';
+    const preferredVoice = voices.find(v => 
+      isFemale 
+        ? (v.name.includes('Female') || v.name.includes('Samantha') || v.name.includes('Victoria') || v.name.includes('Zira'))
+        : (v.name.includes('Male') || v.name.includes('Daniel') || v.name.includes('George') || v.name.includes('David'))
+    ) || voices.find(v => v.lang.startsWith('en')) || voices[0];
+    
+    if (preferredVoice) {
+      utterance.voice = preferredVoice;
+    }
+  }
+
+  window.speechSynthesis.speak(utterance);
+};
+
+export const stopSpeechAloud = (): void => {
+  if (typeof window !== 'undefined' && window.speechSynthesis) {
+    window.speechSynthesis.cancel();
+  }
+};
+
 const synthesizeSingleChunk = async (
-  ai: GoogleGenAI,
   modelName: string,
   chunkText: string,
   voiceName: string,
   voicePrompt?: string
 ): Promise<Uint8Array> => {
-  let promptText = '';
-  if (voicePrompt && voicePrompt.trim()) {
-    const cleanVoicePrompt = voicePrompt
-      .replace(/<text_to_speak>/gi, '')
-      .replace(/<\/text_to_speak>/gi, '')
-      .trim();
-    promptText = `${cleanVoicePrompt}\n\nRead the following passage:\n"${chunkText}"`;
-  } else {
-    promptText = `Read the following text aloud clearly, naturally, and at an even pace:\n\n"${chunkText}"`;
-  }
+  const conciseStyle = voicePrompt && voicePrompt.trim()
+    ? voicePrompt.replace(/\s+/g, ' ').trim().slice(0, 140)
+    : 'Clear, articulate, natural narration';
 
-  const callModel = async (prompt: string) => {
-    return await ai.models.generateContent({
+  const primaryContents = [
+    {
+      role: 'user',
+      parts: [
+        {
+          text: chunkText,
+          speechMetadata: {
+            style: conciseStyle,
+          },
+        },
+      ],
+    },
+  ];
+
+  const callModel = async (contentsPayload: any) => {
+    return await callServerGenerateContent({
       model: modelName,
-      contents: [{ parts: [{ text: prompt }] }],
+      contents: contentsPayload,
       config: {
         responseModalities: [Modality.AUDIO],
         speechConfig: {
@@ -942,25 +1098,41 @@ const synthesizeSingleChunk = async (
     });
   };
 
-  let response = await withRetry(() => callModel(promptText), 3);
-  let candidate = response.candidates?.[0];
-
-  // Scan ALL candidate parts for inlineData audio
+  let response: GenerateContentResponse;
+  let candidate: any;
   let base64Audio: string | undefined;
-  if (candidate?.content?.parts) {
-    for (const part of candidate.content.parts) {
-      if (part.inlineData?.data) {
-        base64Audio = part.inlineData.data;
-        break;
+
+  try {
+    response = await withRetry(() => callModel(primaryContents), 2);
+    candidate = response.candidates?.[0];
+    if (candidate?.content?.parts) {
+      for (const part of candidate.content.parts) {
+        if (part.inlineData?.data) {
+          base64Audio = part.inlineData.data;
+          break;
+        }
       }
+    }
+  } catch (primaryErr: any) {
+    // Only swallow and retry without speechMetadata if it looks like an invalid argument / style metadata issue
+    if (primaryErr?.status === 400) {
+      console.warn(`[TTS] Primary speechMetadata call rejected with 400 on ${modelName}, retrying without metadata...`);
+    } else {
+      throw primaryErr;
     }
   }
 
-  // If first attempt returned no audio and a custom prompt was used, fallback to minimal prompt
+  // If first attempt returned no audio or rejected style metadata, retry once with clean plain user part
   if (!base64Audio) {
-    console.warn("[TTS] Retrying chunk with direct, minimal prompt...");
-    const fallbackPrompt = `Read aloud clearly and naturally: "${chunkText}"`;
-    response = await withRetry(() => callModel(fallbackPrompt), 2);
+    console.warn(`[TTS] Retrying chunk on model ${modelName} with direct user text...`);
+    const fallbackContents = [
+      {
+        role: 'user',
+        parts: [{ text: chunkText }],
+      },
+    ];
+    response = await withRetry(() => callModel(fallbackContents), 1);
+
     candidate = response.candidates?.[0];
     if (candidate?.content?.parts) {
       for (const part of candidate.content.parts) {
@@ -974,8 +1146,7 @@ const synthesizeSingleChunk = async (
 
   if (!base64Audio) {
     const textResponse = candidate?.content?.parts?.[0]?.text;
-    console.error("[TTS] Response missing audio. Text response:", textResponse, "Candidate:", JSON.stringify(candidate, null, 2));
-    throw new Error(`No audio generated from Gemini for speech segment. ${textResponse ? 'Model returned text instead of audio.' : ''} Finish reason: ${candidate?.finishReason || 'Unknown'}`);
+    throw new Error(`Cloud speech model ${modelName} returned text instead of audio data (${textResponse ? 'text response' : 'empty'}).`);
   }
 
   const binaryString = atob(base64Audio);
@@ -984,8 +1155,14 @@ const synthesizeSingleChunk = async (
     bytes[i] = binaryString.charCodeAt(i);
   }
 
-  const alignedLength = bytes.length - (bytes.length % 2);
-  return bytes.subarray(0, alignedLength);
+  // If the audio chunk contains a 44-byte RIFF WAV header, strip it to extract pure PCM
+  let pcmBytes = bytes;
+  if (bytes.length > 44 && bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46) {
+    pcmBytes = bytes.subarray(44);
+  }
+
+  const alignedLength = pcmBytes.length - (pcmBytes.length % 2);
+  return pcmBytes.subarray(0, alignedLength);
 };
 
 export const generateSpeech = async (
@@ -993,9 +1170,8 @@ export const generateSpeech = async (
   voiceName: string = 'Charon',
   customVoicePrompt?: string,
   onProgress?: (current: number, total: number) => void
-): Promise<{ audioUrl: string; blob: Blob; mp3Blob: Blob; mp3Url: string }> => {
-  const ai = getAiClient();
-  const modelName = getStoredTtsModel();
+): Promise<{ audioUrl: string; blob: Blob; mp3Blob: Blob; mp3Url: string; isLocalFallback: boolean }> => {
+  const configuredModel = getStoredTtsModel();
 
   const sanitizedText = sanitizeForTTS(text);
   if (!sanitizedText) {
@@ -1005,7 +1181,7 @@ export const generateSpeech = async (
   const preset = VOICE_PRESETS.find(p => p.id === voiceName);
   let resolvedVoice = preset ? preset.baseVoice : voiceName;
   
-  // Safe normalization of prebuilt voice names supported by Gemini 3.1 Flash TTS
+  // Safe normalization of prebuilt voice names supported by Gemini TTS
   const VOICE_MAP: Record<string, string> = {
     Aoede: 'Kore',
     aoede: 'Kore',
@@ -1026,56 +1202,68 @@ export const generateSpeech = async (
   const chunks = chunkTextForTTS(sanitizedText, 1800);
   console.log(`[TTS] Synthesizing speech with voice ${resolvedVoice} across ${chunks.length} segment(s)...`);
 
-  const chunkAudioBuffers: Uint8Array[] = [];
+  const preferredModel = configuredModel && configuredModel !== 'auto' ? configuredModel : undefined;
 
-  for (let i = 0; i < chunks.length; i++) {
-    if (onProgress) {
-      onProgress(i + 1, chunks.length);
-    }
-    console.log(`[TTS] Processing segment ${i + 1}/${chunks.length} (${chunks[i].length} chars)...`);
-    const chunkBytes = await synthesizeSingleChunk(
-      ai,
-      modelName,
-      chunks[i],
-      resolvedVoice,
-      customVoicePrompt
-    );
-    chunkAudioBuffers.push(chunkBytes);
+  const { result: mergedBytes } = await executeTierWithFailover(
+    'Audio TTS',
+    TTS_AUDIO_TIER,
+    async (modelToUse: string) => {
+      const chunkAudioBuffers: Uint8Array[] = [];
 
-    // Delay between segments to respect API pacing
-    if (i < chunks.length - 1) {
-      await new Promise(resolve => setTimeout(resolve, 400));
-    }
-  }
+      for (let i = 0; i < chunks.length; i++) {
+        if (onProgress) {
+          onProgress(i + 1, chunks.length);
+        }
+        console.log(`[TTS] Processing segment ${i + 1}/${chunks.length} with ${modelToUse}...`);
+        
+        const chunkBytes = await synthesizeSingleChunk(
+          modelToUse,
+          chunks[i],
+          resolvedVoice,
+          customVoicePrompt
+        );
 
-  // Concatenate chunks with silence padding (200ms = 9600 bytes at 24kHz 16-bit)
-  const silenceSamples = 4800; // 200ms at 24000Hz
-  const silenceBytesLength = silenceSamples * 2; // 16-bit = 2 bytes/sample
-  const silence = new Uint8Array(silenceBytesLength);
+        chunkAudioBuffers.push(chunkBytes);
 
-  let totalLength = 0;
-  for (let i = 0; i < chunkAudioBuffers.length; i++) {
-    totalLength += chunkAudioBuffers[i].length;
-    if (i < chunkAudioBuffers.length - 1) {
-      totalLength += silenceBytesLength;
-    }
-  }
+        // Gentle delay between segments to respect API pacing
+        if (i < chunks.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, 300));
+        }
+      }
 
-  const mergedBytes = new Uint8Array(totalLength);
-  let offset = 0;
-  for (let i = 0; i < chunkAudioBuffers.length; i++) {
-    mergedBytes.set(chunkAudioBuffers[i], offset);
-    offset += chunkAudioBuffers[i].length;
-    if (i < chunkAudioBuffers.length - 1) {
-      mergedBytes.set(silence, offset);
-      offset += silenceBytesLength;
-    }
-  }
+      // Concatenate chunks with silence padding (200ms = 9600 bytes at 24kHz 16-bit)
+      const silenceSamples = 4800; // 200ms at 24000Hz
+      const silenceBytesLength = silenceSamples * 2;
+      const silence = new Uint8Array(silenceBytesLength);
+
+      let totalLength = 0;
+      for (let i = 0; i < chunkAudioBuffers.length; i++) {
+        totalLength += chunkAudioBuffers[i].length;
+        if (i < chunkAudioBuffers.length - 1) {
+          totalLength += silenceBytesLength;
+        }
+      }
+
+      const merged = new Uint8Array(totalLength);
+      let offset = 0;
+      for (let i = 0; i < chunkAudioBuffers.length; i++) {
+        merged.set(chunkAudioBuffers[i], offset);
+        offset += chunkAudioBuffers[i].length;
+        if (i < chunkAudioBuffers.length - 1) {
+          merged.set(silence, offset);
+          offset += silenceBytesLength;
+        }
+      }
+
+      return merged;
+    },
+    preferredModel
+  );
 
   const wavBlob = pcmToWav(mergedBytes, 24000);
   const wavUrl = URL.createObjectURL(wavBlob);
   
-  let mp3Blob = wavBlob; // Fallback to wav if mp3 fails
+  let mp3Blob = wavBlob;
   let mp3Url = wavUrl;
   try {
     mp3Blob = pcmToMp3(mergedBytes, 24000);
@@ -1084,7 +1272,7 @@ export const generateSpeech = async (
     console.warn("MP3 encoding failed, falling back to WAV for MP3 download", err);
   }
 
-  return { audioUrl: wavUrl, blob: wavBlob, mp3Blob, mp3Url };
+  return { audioUrl: wavUrl, blob: wavBlob, mp3Blob, mp3Url, isLocalFallback: false };
 };
 
 export interface SlideContext {
@@ -1105,7 +1293,6 @@ export const generateSvgContent = async (
   attachment?: Attachment,
   slideContext?: SlideContext
 ): Promise<DiagramData> => {
-  const ai = getAiClient();
   const modelName = getStoredTextModel();
   let targetFont = 'Inter';
   if (script === ScriptType.THAI || script === ScriptType.PALI_THAI) targetFont = 'Sarabun';
@@ -1237,25 +1424,32 @@ export const generateSvgContent = async (
     }
   }
 
-  const response: GenerateContentResponse = await withRetry(() => ai.models.generateContent({
-    model: modelName,
-    contents: contents,
-    config: {
-      systemInstruction: systemInstruction,
-      responseMimeType: "application/json",
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          title: { type: Type.STRING },
-          description: { type: Type.STRING },
-          contextTitle: { type: Type.STRING },
-          svg: { type: Type.STRING },
-          story_text: { type: Type.STRING }
-        },
-        required: ["title", "description", "svg", "contextTitle", "story_text"]
-      }
-    }
-  }));
+  const { result: response } = await executeTierWithFailover(
+    'Text Generation',
+    TEXT_GENERATION_TIER,
+    async (trialModel: string) => {
+      return await withRetry(() => callServerGenerateContent({
+        model: trialModel,
+        contents: contents,
+        config: {
+          systemInstruction: systemInstruction,
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              title: { type: Type.STRING },
+              description: { type: Type.STRING },
+              contextTitle: { type: Type.STRING },
+              svg: { type: Type.STRING },
+              story_text: { type: Type.STRING }
+            },
+            required: ["title", "description", "svg", "contextTitle", "story_text"]
+          }
+        }
+      }));
+    },
+    modelName
+  );
 
   const text = response.text;
   if (!text) throw new Error("No response from Gemini");
@@ -1348,7 +1542,6 @@ export const generateSlideDeck = async (
   ratio: AspectRatio,
   attachment?: Attachment
 ): Promise<DiagramData[]> => {
-  const ai = getAiClient();
   const planningSystemInstruction = `
     You are the Kathika (Narrative Architect & Master Storyteller).
     TASK: Break down the user's topic or attached document into a sequence of 4 distinct "scenes" or "acts" for a sequential audio-book visual narrative.
@@ -1394,28 +1587,35 @@ export const generateSlideDeck = async (
     }
   }
 
-  const planningResponse: GenerateContentResponse = await withRetry(() => ai.models.generateContent({
-    model: getStoredTextModel(),
-    contents: contents,
-    config: {
-      systemInstruction: planningSystemInstruction,
-      responseMimeType: "application/json",
-      responseSchema: {
-        type: Type.ARRAY,
-        items: {
-          type: Type.OBJECT,
-          properties: {
-            sceneTitle: { type: Type.STRING },
-            act: { type: Type.STRING },
-            narrativeFocus: { type: Type.STRING },
-            visualPrompt: { type: Type.STRING },
-            contentPrompt: { type: Type.STRING }
-          },
-          required: ["sceneTitle", "act", "narrativeFocus", "visualPrompt", "contentPrompt"]
+  const { result: planningResponse } = await executeTierWithFailover(
+    'Narrative Planning',
+    TEXT_GENERATION_TIER,
+    async (trialModel: string) => {
+      return await withRetry(() => callServerGenerateContent({
+        model: trialModel,
+        contents: contents,
+        config: {
+          systemInstruction: planningSystemInstruction,
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                sceneTitle: { type: Type.STRING },
+                act: { type: Type.STRING },
+                narrativeFocus: { type: Type.STRING },
+                visualPrompt: { type: Type.STRING },
+                contentPrompt: { type: Type.STRING }
+              },
+              required: ["sceneTitle", "act", "narrativeFocus", "visualPrompt", "contentPrompt"]
+            }
+          }
         }
-      }
-    }
-  }));
+      }));
+    },
+    getStoredTextModel()
+  );
 
   const scenes = JSON.parse(planningResponse.text.replace(/```json/g, '').replace(/```/g, '').trim());
 

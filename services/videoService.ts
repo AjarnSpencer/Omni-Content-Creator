@@ -160,10 +160,15 @@ export const createVideoFromImagesAndAudio = async (
         if (slide.audioBuffer) {
           const source = audioContext.createBufferSource();
           source.buffer = slide.audioBuffer;
+          // Route exclusively to recording stream destination - physical speakers remain completely silent
           source.connect(destination);
-          source.connect(audioContext.destination);
           
           source.onended = () => {
+            try {
+              source.disconnect();
+            } catch (e) {
+              // ignore
+            }
             currentSlideIdx++;
             slideStartTime = audioContext.currentTime;
             playNextSlide();

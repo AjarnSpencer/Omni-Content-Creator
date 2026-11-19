@@ -14,7 +14,23 @@ import {
   Attachment,
   getDimensions
 } from './types';
-  import { generateDiagram, generateSlideDeck, generateSpeech, getStoredApiKey, setStoredApiKey, removeStoredApiKey, mergeAudioBlobs, pcmToWav, pcmToMp3, VOICE_PRESETS, getStoredTextModel, getStoredTtsModel, setStoredTextModel, setStoredTtsModel } from './services/geminiService';
+import { 
+  generateDiagram, 
+  generateSlideDeck, 
+  generateSpeech, 
+  mergeAudioBlobs, 
+  pcmToWav, 
+  pcmToMp3, 
+  VOICE_PRESETS, 
+  getStoredTextModel, 
+  getStoredTtsModel, 
+  setStoredTextModel, 
+  setStoredTtsModel,
+  speakTextAloud,
+  stopSpeechAloud,
+  SUPPORTED_TEXT_MODELS,
+  SUPPORTED_TTS_MODELS
+} from './services/geminiService';
 import { createVideoFromImagesAndAudio } from './services/videoService';
 import { AgentBadge } from './components/AgentBadge';
 import { DiagramCanvas } from './components/DiagramCanvas';
@@ -35,8 +51,6 @@ import {
   ChevronLeft,
   ChevronRight,
   Maximize,
-  Key,
-  LogOut,
   Settings,
   Share2,
   Mic,
@@ -243,8 +257,6 @@ const getInitialAgents = (artStyle: ArtStyle): AgentStatus[] => {
 
 
 export default function App() {
-  const [apiKey, setApiKey] = useState<string | null>(null);
-  const [apiKeyInput, setApiKeyInput] = useState('');
   const [isInitializing, setIsInitializing] = useState(true);
   const [artStyle, setArtStyle] = useState<ArtStyle>(ArtStyle.RATTANAKOSIN);
   const [generationMode, setGenerationMode] = useState<GenerationMode>(GenerationMode.STUDIO);
@@ -306,6 +318,55 @@ export default function App() {
       // Collapse whitespace
       .replace(/\s+/g, ' ')
       .trim();
+  };
+
+  const [isPlayingAudio, setIsPlayingAudio] = useState(false);
+  const [isSpeakingAloud, setIsSpeakingAloud] = useState(false);
+  const audioPlayerRef = useRef<HTMLAudioElement | null>(null);
+
+  useEffect(() => {
+    setIsPlayingAudio(false);
+    setIsSpeakingAloud(false);
+    stopSpeechAloud();
+    if (audioPlayerRef.current) {
+      audioPlayerRef.current.pause();
+    }
+  }, [currentSlideIndex]);
+
+  const togglePlayAudio = () => {
+    if (!audioPlayerRef.current) return;
+    if (isPlayingAudio) {
+      audioPlayerRef.current.pause();
+      setIsPlayingAudio(false);
+    } else {
+      audioPlayerRef.current.play().catch(err => {
+        console.warn("Audio element playback failed:", err);
+      });
+      setIsPlayingAudio(true);
+    }
+  };
+
+  const toggleSpeakAloud = () => {
+    const d = currentDiagrams[currentSlideIndex];
+    if (!d) return;
+    if (isSpeakingAloud) {
+      stopSpeechAloud();
+      setIsSpeakingAloud(false);
+    } else {
+      const cleanTitle = cleanTextForSpeech(d.title);
+      const cleanStory = cleanTextForSpeech(d.story_text || d.final_humanized_output || d.description);
+      const textToSpeak = `${cleanTitle}. ${cleanStory}`;
+      speakTextAloud(textToSpeak, voiceName);
+      setIsSpeakingAloud(true);
+      if (typeof window !== 'undefined' && window.speechSynthesis) {
+        const interval = setInterval(() => {
+          if (!window.speechSynthesis.speaking) {
+            setIsSpeakingAloud(false);
+            clearInterval(interval);
+          }
+        }, 400);
+      }
+    }
   };
 
   const handleShare = async () => {
@@ -438,10 +499,12 @@ export default function App() {
     } catch (err: any) {
       console.error('Audio generation error:', err);
       const msg = err.message || 'Unknown audio generation error';
-      if (msg.includes('403') || msg.includes('Forbidden')) {
-        setAudioErrorMessage(`Access Forbidden (403). Please verify that your Gemini API key has access to the Gemini TTS model.`);
+      if (msg.includes('403') || msg.includes('Forbidden') || msg.includes('PERMISSION_DENIED')) {
+        setAudioErrorMessage(`Access Forbidden (403): Check that the server API key in Settings > Secrets has permissions for Gemini TTS models in this region.`);
       } else if (msg.includes('429') || msg.includes('RESOURCE_EXHAUSTED')) {
-        setAudioErrorMessage(`Rate limit reached (429). Completed slides have been preserved. Wait a moment and click to generate the remaining slide.`);
+        setAudioErrorMessage(`Rate limit / quota reached on Cloud API. Please wait a moment or check Settings > Secrets for a billing-enabled API key.`);
+      } else if (msg.includes('404') || msg.includes('not found')) {
+        setAudioErrorMessage(`TTS model unavailable. Automatic tier failover was attempted—please open Model Config and reset Speech Engine to 'auto'.`);
       } else {
         setAudioErrorMessage(`Audio generation notice: ${msg}`);
       }
@@ -866,17 +929,17 @@ export default function App() {
       audioSize: currentDiagram.audioBlob.size
     });
     
-    // Unlock audio context immediately on user gesture
+    // Warm up audio context safely on user gesture without any audio output
     try {
-      const AudioContext = window.AudioContext || (window as any).webkitAudioContext;
-      const ctx = new AudioContext();
-      ctx.resume();
-      const osc = ctx.createOscillator();
-      osc.connect(ctx.destination);
-      osc.start(0);
-      osc.stop(0.001);
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      if (AudioCtx) {
+        const ctx = new AudioCtx();
+        ctx.resume().then(() => {
+          setTimeout(() => ctx.close().catch(() => {}), 100);
+        }).catch(() => {});
+      }
     } catch (e) {
-      console.warn("Could not unlock audio context:", e);
+      // ignore
     }
     
     setIsGeneratingVideo(true);
@@ -981,28 +1044,15 @@ export default function App() {
   }, [currentDiagrams]);
 
   useEffect(() => {
-    const storedKey = getStoredApiKey();
-    if (storedKey) {
-      setApiKey(storedKey);
+    try {
+      localStorage.removeItem('omni_content_api_key');
+    } catch {
+      // ignore storage errors
     }
     setTextModelOverride(getStoredTextModel());
     setTtsModelOverride(getStoredTtsModel());
     setIsInitializing(false);
   }, []);
-
-  const handleSaveApiKey = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (apiKeyInput.trim()) {
-      setStoredApiKey(apiKeyInput.trim());
-      setApiKey(apiKeyInput.trim());
-    }
-  };
-
-  const handleLogout = () => {
-    removeStoredApiKey();
-    setApiKey(null);
-    setApiKeyInput('');
-  };
 
   const handleVoiceChange = (newVoiceId: string) => {
     setVoiceName(newVoiceId);
@@ -1226,13 +1276,10 @@ export default function App() {
       console.error(error);
       let errorMessage = error.message || "Unknown error";
       
-      if (errorMessage === "API_KEY_REQUIRED") {
-        errorMessage = "Please provide your Gemini API Key first.";
-        handleLogout(); // Show login screen
-      } else if (errorMessage.includes("Requested entity was not found")) {
-        // Reset key selection state as per instructions for Veo/Image models
-        setApiKey(null);
-        errorMessage = "API Key error. Please enter your API key again.";
+      if (errorMessage.includes("403") || errorMessage.includes("Forbidden") || errorMessage.includes("PERMISSION_DENIED")) {
+        errorMessage = "Access denied (403). Please verify the app's API key in Settings > Secrets.";
+      } else if (errorMessage.includes("429") || errorMessage.includes("RESOURCE_EXHAUSTED")) {
+        errorMessage = "Quota or rate limit reached. Please wait a moment or check Settings > Secrets.";
       }
       
       setAgents(prev => prev.map(a => 
@@ -1272,94 +1319,6 @@ export default function App() {
     );
   }
 
-  if (!apiKey) {
-    return (
-      <div className="min-h-screen bg-[#1a1005] flex flex-col items-center justify-center p-6 text-center">
-        <div className="max-w-2xl space-y-8 animate-fade-in">
-          <div className="flex flex-col items-center gap-4">
-            <div className="p-4 rounded-full bg-rattanakosin-900 border border-rattanakosin-gold/30 shadow-2xl shadow-rattanakosin-gold/10">
-              <Palette className="w-16 h-16 text-rattanakosin-gold animate-spin-slow" />
-            </div>
-            <h1 className="text-5xl font-bold font-display text-rattanakosin-gold tracking-tight">
-              Omni-Content Creator
-            </h1>
-            <p className="text-rattanakosin-100/70 font-serif text-lg leading-relaxed">
-              Manifest visual infographics and visual treatises through the power of advanced AI. 
-              Secure, scholarly, and traditionally inspired.
-            </p>
-          </div>
-
-          <div className="p-8 sm:p-12 rounded-3xl bg-[#1e1205] border border-rattanakosin-800 shadow-2xl space-y-6 sm:space-y-8">
-            <div className="flex justify-between items-start">
-              <div className="space-y-2 text-left">
-                <h2 className="text-rattanakosin-gold font-bold uppercase tracking-widest text-sm sm:text-base">Bring Your Own Key</h2>
-                <p className="text-rattanakosin-100/60 text-xs sm:text-sm">
-                  Enter your Google Gemini API Key to begin. Your key is stored locally entirely on your device.
-                </p>
-              </div>
-              <button 
-                onClick={() => setShowSettingsModal(true)}
-                className="w-12 h-12 shrink-0 rounded-full bg-rattanakosin-900 border border-rattanakosin-gold/30 hover:bg-rattanakosin-gold/15 flex items-center justify-center transition-colors cursor-pointer text-rattanakosin-gold"
-                title="Model Config overrides"
-              >
-                <Settings className="w-6 h-6" />
-              </button>
-            </div>
-            
-            <form onSubmit={handleSaveApiKey} className="space-y-4 sm:space-y-6">
-              <div className="relative">
-                <Key className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-rattanakosin-gold/50" />
-                <label htmlFor="apiKeyInput" className="sr-only">Gemini API Key</label>
-                <input 
-                  id="apiKeyInput"
-                  name="apiKeyInput"
-                  type="password"
-                  placeholder="Enter Gemini API Key..."
-                  value={apiKeyInput}
-                  onChange={(e) => setApiKeyInput(e.target.value)}
-                  className="w-full pl-12 pr-4 py-4 sm:py-5 rounded-xl bg-[#120a02] border border-rattanakosin-900 text-rattanakosin-50 focus:outline-none focus:ring-2 focus:ring-rattanakosin-600 transition-all placeholder-rattanakosin-900 text-sm sm:text-base"
-                />
-              </div>
-              <div className="grid grid-cols-1 gap-4">
-                <button 
-                  type="submit"
-                  disabled={!apiKeyInput.trim()}
-                  className="flex items-center justify-center gap-3 py-4 sm:py-5 px-6 rounded-xl bg-rattanakosin-600 text-white font-bold hover:bg-rattanakosin-500 transition-all transform hover:scale-[1.02] active:scale-[0.98] shadow-xl disabled:opacity-50 disabled:cursor-not-allowed text-sm sm:text-base uppercase tracking-widest"
-                >
-                  <Sparkles className="w-5 h-5 sm:w-6 sm:h-6" />
-                  Save API Key
-                </button>
-              </div>
-            </form>
-
-            <div className="pt-4 sm:pt-6 border-t border-rattanakosin-900 flex flex-col items-center gap-3 text-center">
-              <a 
-                href="https://aistudio.google.com/app/apikey" 
-                target="_blank" 
-                rel="noopener noreferrer"
-                className="text-xs sm:text-sm text-rattanakosin-gold hover:underline uppercase tracking-widest"
-              >
-                Get a free API Key from Google AI Studio
-              </a>
-              <a 
-                href="https://ai.google.dev/gemini-api/docs/billing" 
-                target="_blank" 
-                rel="noopener noreferrer"
-                className="text-xs sm:text-sm text-rattanakosin-gold/50 hover:underline uppercase tracking-widest"
-              >
-                Billing Documentation (Paid Tier)
-              </a>
-            </div>
-          </div>
-
-          <p className="text-[10px] sm:text-xs text-rattanakosin-100/30 font-mono uppercase tracking-widest">
-            Created by Ajarn Spencer Littlewood • Buddha Magic Multimedia
-          </p>
-        </div>
-      </div>
-    );
-  }
-
   return (
     <div className={`min-h-screen transition-colors duration-700 font-sans flex flex-col bg-[#2a1b0a] text-rattanakosin-50`}>
       
@@ -1381,37 +1340,22 @@ export default function App() {
         </div>
 
         <div className="flex items-center space-x-4 sm:space-x-6 w-full sm:w-auto justify-between sm:justify-end flex-wrap gap-y-4">
-           {/* API Key Status */}
-           <div className="flex items-center gap-3 sm:gap-4 pr-3 sm:pr-4 border-r border-rattanakosin-800">
-             <div className="text-right hidden xs:block">
-               <p className="text-xs sm:text-sm font-bold text-rattanakosin-gold uppercase tracking-tighter">BYOK Mode</p>
-               <p className="text-[10px] sm:text-xs text-rattanakosin-100/70 truncate max-w-[80px] sm:max-w-[120px]">Key: •••{apiKey.slice(-4)}</p>
-             </div>
-             <div className="flex items-center gap-2">
-               <button 
-                 onClick={() => setShowCollaboratorsModal(true)}
-                 className="w-10 h-10 sm:w-12 sm:h-12 rounded-full bg-rattanakosin-900 hover:bg-rattanakosin-gold/15 flex items-center justify-center border border-rattanakosin-gold/30 transition-colors cursor-pointer"
-                 title="Authors & Collaborators"
-               >
-                 <Users className="w-5 h-5 sm:w-6 sm:h-6 text-rattanakosin-gold" />
-               </button>
-               <div className="relative group">
-                 <button 
-                   onClick={() => setShowSettingsModal(true)}
-                   className="w-10 h-10 sm:w-12 sm:h-12 rounded-full bg-rattanakosin-900 flex items-center justify-center border border-rattanakosin-gold/30 hover:bg-rattanakosin-gold/15 transition-colors cursor-pointer"
-                   title="Model Overrides & Settings"
-                 >
-                   <Settings className="w-5 h-5 sm:w-6 sm:h-6 text-rattanakosin-gold" />
-                 </button>
-                 <button 
-                   onClick={handleLogout}
-                   className="absolute -bottom-1 -right-1 p-2 bg-red-600 rounded-full text-white opacity-0 group-hover:opacity-100 transition-opacity shadow-lg"
-                   title="Clear API Key"
-                 >
-                   <LogOut className="w-3 h-3 sm:w-4 sm:h-4" />
-                 </button>
-               </div>
-             </div>
+           {/* Utility Portals */}
+           <div className="flex items-center gap-2 pr-3 sm:pr-4 border-r border-rattanakosin-800">
+             <button 
+               onClick={() => setShowCollaboratorsModal(true)}
+               className="w-10 h-10 sm:w-12 sm:h-12 rounded-full bg-rattanakosin-900 hover:bg-rattanakosin-gold/15 flex items-center justify-center border border-rattanakosin-gold/30 transition-colors cursor-pointer"
+               title="Authors & Collaborators"
+             >
+               <Users className="w-5 h-5 sm:w-6 sm:h-6 text-rattanakosin-gold" />
+             </button>
+             <button 
+               onClick={() => setShowSettingsModal(true)}
+               className="w-10 h-10 sm:w-12 sm:h-12 rounded-full bg-rattanakosin-900 flex items-center justify-center border border-rattanakosin-gold/30 hover:bg-rattanakosin-gold/15 transition-colors cursor-pointer"
+               title="Model Overrides & Settings"
+             >
+               <Settings className="w-5 h-5 sm:w-6 sm:h-6 text-rattanakosin-gold" />
+             </button>
            </div>
            {/* Generation Mode Selector */}
            <div className="flex bg-rattanakosin-900/50 p-1 sm:p-1.5 rounded-full border border-rattanakosin-gold/30">
@@ -1814,22 +1758,75 @@ export default function App() {
                 
                 {/* Unified Download Hub */}
                 <div className="mb-8 space-y-6">
-                  <div className="flex items-center justify-between border-b border-rattanakosin-800 pb-2 mb-4">
-                    <div className="flex items-center gap-2">
-                      <Download className="w-5 h-5 text-rattanakosin-gold" />
-                      <h4 className="text-sm font-bold uppercase tracking-widest text-rattanakosin-gold/70">Download Hub</h4>
-                    </div>
-                    {currentDiagrams.length > 0 && (
-                      <button 
-                        onClick={handleDownloadAllAssets}
-                        disabled={isZipping}
-                        className="px-5 py-2.5 sm:px-6 sm:py-3 bg-rattanakosin-gold text-rattanakosin-950 font-bold text-xs sm:text-sm uppercase tracking-widest hover:bg-rattanakosin-300 transition-all rounded-xl flex items-center gap-2 shadow-lg disabled:opacity-50 disabled:cursor-not-allowed group"
-                      >
-                        <Download className="w-4 h-4 sm:w-5 sm:h-5 group-hover:translate-y-0.5 transition-transform" />
-                        {isZipping ? 'ZIPPING...' : 'DOWNLOAD ALL FILES (ZIP)'}
-                      </button>
-                    )}
-                  </div>
+                  {(() => {
+                    const hasSvg = currentDiagrams.some(d => !!d.svg);
+                    const hasArt = currentDiagrams.some(d => !!d.backgroundUrl);
+                    const hasText = currentDiagrams.some(d => !!d.story_text);
+                    const hasAudio = currentDiagrams.some(d => !!d.audioUrl || !!d.audioBlob);
+                    const hasVideo = currentDiagrams.some(d => !!d.videoUrl || !!d.videoBlob);
+                    const readyCount = [hasSvg, hasArt, hasText, hasAudio, hasVideo].filter(Boolean).length;
+                    const allReady = readyCount === 5;
+
+                    return (
+                      <>
+                        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between border-b border-rattanakosin-800 pb-3 mb-4 gap-3">
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <Download className="w-5 h-5 text-rattanakosin-gold" />
+                              <h4 className="text-sm font-bold uppercase tracking-widest text-rattanakosin-gold/70">Download Hub</h4>
+                            </div>
+                            <p className="text-[11px] text-rattanakosin-100/60 mt-0.5">
+                              {allReady 
+                                ? "Complete creative bundle generated (Vector, Art, Script, Audio & Video)"
+                                : `Archive bundle includes currently generated assets (${readyCount}/5 categories ready)`}
+                            </p>
+                          </div>
+                          {currentDiagrams.length > 0 && (
+                            <button 
+                              onClick={handleDownloadAllAssets}
+                              disabled={isZipping}
+                              className="px-5 py-2.5 sm:px-6 sm:py-3 bg-rattanakosin-gold text-rattanakosin-950 font-bold text-xs sm:text-sm uppercase tracking-widest hover:bg-rattanakosin-300 transition-all rounded-xl flex items-center gap-2 shadow-lg disabled:opacity-50 disabled:cursor-not-allowed group shrink-0"
+                            >
+                              <Download className="w-4 h-4 sm:w-5 sm:h-5 group-hover:translate-y-0.5 transition-transform" />
+                              {isZipping 
+                                ? 'PACKAGING ASSETS (ZIP)...' 
+                                : allReady
+                                  ? 'DOWNLOAD COMPLETE BUNDLE (ZIP)'
+                                  : `DOWNLOAD ASSET BUNDLE (${readyCount}/5 READY)`}
+                            </button>
+                          )}
+                        </div>
+
+                        {/* Live Asset Readiness Status Bar */}
+                        <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 p-2.5 rounded-xl bg-rattanakosin-950/60 border border-rattanakosin-800/60 mb-4 text-[10px] uppercase font-bold tracking-wider">
+                          <div className="flex items-center gap-1.5 px-2 py-1 rounded bg-black/30">
+                            <span className={`w-2 h-2 rounded-full ${hasSvg ? 'bg-emerald-400 shadow-sm shadow-emerald-400/50' : 'bg-amber-600/50'}`} />
+                            <span className={hasSvg ? 'text-emerald-300' : 'text-rattanakosin-100/40'}>Vector (SVG)</span>
+                          </div>
+                          <div className="flex items-center gap-1.5 px-2 py-1 rounded bg-black/30">
+                            <span className={`w-2 h-2 rounded-full ${hasArt ? 'bg-emerald-400 shadow-sm shadow-emerald-400/50' : 'bg-amber-600/50'}`} />
+                            <span className={hasArt ? 'text-emerald-300' : 'text-rattanakosin-100/40'}>Art (PNG)</span>
+                          </div>
+                          <div className="flex items-center gap-1.5 px-2 py-1 rounded bg-black/30">
+                            <span className={`w-2 h-2 rounded-full ${hasText ? 'bg-emerald-400 shadow-sm shadow-emerald-400/50' : 'bg-amber-600/50'}`} />
+                            <span className={hasText ? 'text-emerald-300' : 'text-rattanakosin-100/40'}>Script (MD)</span>
+                          </div>
+                          <div className="flex items-center gap-1.5 px-2 py-1 rounded bg-black/30">
+                            <span className={`w-2 h-2 rounded-full ${hasAudio ? 'bg-emerald-400 shadow-sm shadow-emerald-400/50' : 'bg-amber-600/50'}`} />
+                            <span className={hasAudio ? 'text-emerald-300' : 'text-rattanakosin-100/40'}>
+                              {hasAudio ? 'Audio (MP3)' : 'Audio (Pending)'}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-1.5 px-2 py-1 rounded bg-black/30 col-span-2 sm:col-span-1">
+                            <span className={`w-2 h-2 rounded-full ${hasVideo ? 'bg-emerald-400 shadow-sm shadow-emerald-400/50' : 'bg-amber-600/50'}`} />
+                            <span className={hasVideo ? 'text-emerald-300' : 'text-rattanakosin-100/40'}>
+                              {hasVideo ? 'Video (MP4)' : 'Video (Pending)'}
+                            </span>
+                          </div>
+                        </div>
+                      </>
+                    );
+                  })()}
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-6">
                     
@@ -1934,6 +1931,37 @@ export default function App() {
                               </button>
                             ) : (
                               <div className="space-y-2">
+                                <div className="p-2.5 rounded-lg bg-[#120a02] border border-amber-600/30 flex items-center justify-between gap-2 shadow-inner">
+                                  <div className="flex items-center gap-2.5">
+                                    <button
+                                      onClick={togglePlayAudio}
+                                      className="w-8 h-8 rounded-full bg-amber-600 hover:bg-amber-500 text-white flex items-center justify-center transition-all shadow cursor-pointer shrink-0"
+                                      title={isPlayingAudio ? "Pause Audio" : "Play Audio"}
+                                    >
+                                      {isPlayingAudio ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5 ml-0.5" />}
+                                    </button>
+                                    <div className="flex flex-col text-left">
+                                      <span className="text-[11px] font-bold text-rattanakosin-gold tracking-wide">
+                                        {isPlayingAudio ? "Playing Audio..." : "Narration Audio Ready"}
+                                      </span>
+                                      <span className="text-[9px] text-rattanakosin-100/50 font-mono">
+                                        Slide {currentSlideIndex + 1} of {currentDiagrams.length}
+                                      </span>
+                                    </div>
+                                  </div>
+                                  <button
+                                    onClick={toggleSpeakAloud}
+                                    className={`px-2.5 py-1 rounded text-[10px] font-bold uppercase tracking-wider border transition-all flex items-center gap-1 cursor-pointer ${
+                                      isSpeakingAloud 
+                                        ? 'bg-amber-500/20 border-amber-500 text-amber-200 animate-pulse' 
+                                        : 'bg-rattanakosin-900/60 border-rattanakosin-800 text-rattanakosin-100/70 hover:text-white'
+                                    }`}
+                                    title="Speak aloud with in-browser voice"
+                                  >
+                                    <Volume2 className="w-3 h-3 text-amber-400" />
+                                    <span>{isSpeakingAloud ? "Stop Voice" : "Live Voice"}</span>
+                                  </button>
+                                </div>
                                 <div className="flex gap-1.5">
                                   <button 
                                     onClick={() => downloadAudio('mp3', 'current')}
@@ -2033,6 +2061,37 @@ export default function App() {
                             </button>
                           ) : (
                             <div className="space-y-2">
+                              <div className="p-2.5 rounded-lg bg-[#120a02] border border-amber-600/30 flex items-center justify-between gap-2 shadow-inner">
+                                <div className="flex items-center gap-2.5">
+                                  <button
+                                    onClick={togglePlayAudio}
+                                    className="w-8 h-8 rounded-full bg-amber-600 hover:bg-amber-500 text-white flex items-center justify-center transition-all shadow cursor-pointer shrink-0"
+                                    title={isPlayingAudio ? "Pause Audio" : "Play Audio"}
+                                  >
+                                    {isPlayingAudio ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5 ml-0.5" />}
+                                  </button>
+                                  <div className="flex flex-col text-left">
+                                    <span className="text-[11px] font-bold text-rattanakosin-gold tracking-wide">
+                                      {isPlayingAudio ? "Playing Audio..." : "Narration Audio Ready"}
+                                    </span>
+                                    <span className="text-[9px] text-rattanakosin-100/50 font-mono">
+                                      Single Audio Podcast
+                                    </span>
+                                  </div>
+                                </div>
+                                <button
+                                  onClick={toggleSpeakAloud}
+                                  className={`px-2.5 py-1 rounded text-[10px] font-bold uppercase tracking-wider border transition-all flex items-center gap-1 cursor-pointer ${
+                                    isSpeakingAloud 
+                                      ? 'bg-amber-500/20 border-amber-500 text-amber-200 animate-pulse' 
+                                      : 'bg-rattanakosin-900/60 border-rattanakosin-800 text-rattanakosin-100/70 hover:text-white'
+                                  }`}
+                                  title="Speak aloud with in-browser voice"
+                                >
+                                  <Volume2 className="w-3 h-3 text-amber-400" />
+                                  <span>{isSpeakingAloud ? "Stop Voice" : "Live Voice"}</span>
+                                </button>
+                              </div>
                               <div className="flex gap-1.5">
                                 <button 
                                   onClick={() => downloadAudio('mp3', 'current')}
@@ -2084,6 +2143,15 @@ export default function App() {
                             </div>
                           )
                         )}
+                        {/* Audio Player Element for Slide Audio Preview */}
+                        <audio
+                          ref={audioPlayerRef}
+                          src={currentDiagram?.audioUrl || undefined}
+                          onEnded={() => setIsPlayingAudio(false)}
+                          onPause={() => setIsPlayingAudio(false)}
+                          onPlay={() => setIsPlayingAudio(true)}
+                          className="hidden"
+                        />
                       </div>
                     </div>
                   </div>
@@ -2120,11 +2188,11 @@ export default function App() {
       {/* Advanced Settings Modal */}
       {showSettingsModal && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/85 backdrop-blur-sm">
-          <div className="relative w-full max-w-lg p-6 sm:p-8 rounded-2xl bg-[#1e1205] border border-rattanakosin-gold/30 shadow-2xl text-left space-y-6">
+          <div className="relative w-full max-w-xl p-6 sm:p-8 rounded-2xl bg-[#1e1205] border border-rattanakosin-gold/30 shadow-2xl text-left space-y-6 max-h-[90vh] overflow-y-auto">
             <button 
               onClick={() => {
-                setStoredTextModel(textModelOverride || 'gemini-2.5-flash');
-                setStoredTtsModel(ttsModelOverride || 'gemini-3.1-flash-tts-preview');
+                setStoredTextModel(textModelOverride || 'gemini-4-hydrogen');
+                setStoredTtsModel(ttsModelOverride || 'auto');
                 setShowSettingsModal(false);
               }}
               className="absolute top-4 right-4 p-2 rounded-full bg-[#120a02] hover:bg-rattanakosin-gold/10 text-rattanakosin-gold hover:text-white transition-all cursor-pointer"
@@ -2138,41 +2206,169 @@ export default function App() {
               </div>
               <div>
                 <h2 className="text-xl sm:text-2xl font-bold font-display text-rattanakosin-gold tracking-tight">Model Config</h2>
-                <p className="text-[10px] sm:text-xs uppercase tracking-widest text-rattanakosin-100/50 font-mono">Future-Proof AI Engine Overrides</p>
+                <p className="text-[10px] sm:text-xs uppercase tracking-widest text-rattanakosin-100/50 font-mono">Semantic Capability Tiers & Engine Overrides</p>
               </div>
             </div>
 
             <div className="space-y-6">
-              <div className="space-y-2">
-                <label className="block text-xs sm:text-sm font-bold uppercase tracking-wider text-rattanakosin-gold">Text & Logic Model (Brain)</label>
-                <input 
-                  type="text"
-                  value={textModelOverride}
-                  onChange={(e) => setTextModelOverride(e.target.value)}
-                  className="w-full px-4 py-3 rounded-xl bg-[#120a02] border border-rattanakosin-900 text-rattanakosin-50 focus:outline-none focus:ring-2 focus:ring-rattanakosin-gold font-mono text-sm sm:text-base border-2"
-                  placeholder="e.g. gemini-2.5-flash"
-                />
-                <p className="text-xs text-rattanakosin-100/50">Overrides the core model used for generation, logic, and reasoning.</p>
+              {/* Text & Logic Model Selection */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <label className="block text-xs sm:text-sm font-bold uppercase tracking-wider text-rattanakosin-gold">Text & Logic Model (Brain)</label>
+                  <span className="text-[10px] font-mono text-amber-400/80">Active: {textModelOverride || 'gemini-4-hydrogen'}</span>
+                </div>
+                
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setTextModelOverride('gemini-4-hydrogen')}
+                    className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
+                      textModelOverride === 'gemini-4-hydrogen' || !textModelOverride
+                        ? 'bg-amber-600/20 border-amber-500 shadow-md ring-1 ring-amber-500'
+                        : 'bg-[#120a02] border-rattanakosin-900 hover:border-rattanakosin-gold/40'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold text-rattanakosin-gold">Gemini 4 Hydrogen</span>
+                      <span className="text-[9px] px-1.5 py-0.5 rounded bg-green-500/20 text-green-300 font-mono">Recommended</span>
+                    </div>
+                    <p className="text-[10px] text-rattanakosin-100/60 mt-1">Fast, capable Gemini 4 Flash for crisp diagrams and narrative synthesis.</p>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setTextModelOverride('gemini-4-argon')}
+                    className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
+                      textModelOverride === 'gemini-4-argon'
+                        ? 'bg-amber-600/20 border-amber-500 shadow-md ring-1 ring-amber-500'
+                        : 'bg-[#120a02] border-rattanakosin-900 hover:border-rattanakosin-gold/40'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold text-rattanakosin-gold">Gemini 4 Argon</span>
+                      <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 font-mono">Complex Logic</span>
+                    </div>
+                    <p className="text-[10px] text-rattanakosin-100/60 mt-1">Flagship reasoning model for intricate scholarly & multi-step tasks.</p>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setTextModelOverride('gemini-4-carbon')}
+                    className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
+                      textModelOverride === 'gemini-4-carbon'
+                        ? 'bg-amber-600/20 border-amber-500 shadow-md ring-1 ring-amber-500'
+                        : 'bg-[#120a02] border-rattanakosin-900 hover:border-rattanakosin-gold/40'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold text-rattanakosin-gold">Gemini 4 Carbon</span>
+                      <span className="text-[9px] px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-300 font-mono">Deep Reasoning</span>
+                    </div>
+                    <p className="text-[10px] text-rattanakosin-100/60 mt-1">Maximum reasoning depth for philosophical & architectural design.</p>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setTextModelOverride('gemini-3.8-flash')}
+                    className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
+                      textModelOverride === 'gemini-3.8-flash'
+                        ? 'bg-amber-600/20 border-amber-500 shadow-md ring-1 ring-amber-500'
+                        : 'bg-[#120a02] border-rattanakosin-900 hover:border-rattanakosin-gold/40'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold text-rattanakosin-gold">Gemini 3.8 Flash</span>
+                      <span className="text-[9px] px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-300 font-mono">Fallback</span>
+                    </div>
+                    <p className="text-[10px] text-rattanakosin-100/60 mt-1">Reliable fast multimodal synthesis and SVG composition.</p>
+                  </button>
+                </div>
+
+                <div className="pt-1">
+                  <input 
+                    type="text"
+                    value={textModelOverride}
+                    onChange={(e) => setTextModelOverride(e.target.value)}
+                    className="w-full px-4 py-2.5 rounded-xl bg-[#120a02] border border-rattanakosin-900 text-rattanakosin-50 focus:outline-none focus:ring-2 focus:ring-rattanakosin-gold font-mono text-xs sm:text-sm"
+                    placeholder="Custom model ID (e.g. gemini-4-hydrogen)"
+                  />
+                </div>
               </div>
 
-              <div className="space-y-2">
-                <label className="block text-xs sm:text-sm font-bold uppercase tracking-wider text-rattanakosin-gold">Text-To-Speech Model (Voice)</label>
-                <input 
-                  type="text"
-                  value={ttsModelOverride}
-                  onChange={(e) => setTtsModelOverride(e.target.value)}
-                  className="w-full px-4 py-3 rounded-xl bg-[#120a02] border border-rattanakosin-900 text-rattanakosin-50 focus:outline-none focus:ring-2 focus:ring-rattanakosin-gold font-mono text-sm sm:text-base border-2"
-                  placeholder="e.g. gemini-3.1-flash-tts-preview"
-                />
-                <p className="text-xs text-rattanakosin-100/50">Native text-to-speech model. Default: <span className="text-white font-mono">gemini-3.1-flash-tts-preview</span>.</p>
+              {/* Text-To-Speech Model Selection */}
+              <div className="space-y-3 border-t border-rattanakosin-gold/10 pt-4">
+                <div className="flex items-center justify-between">
+                  <label className="block text-xs sm:text-sm font-bold uppercase tracking-wider text-rattanakosin-gold">Speech & Audio Engine (Voice)</label>
+                  <span className="text-[10px] font-mono text-amber-400/80">Active: {ttsModelOverride || 'auto'}</span>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setTtsModelOverride('auto')}
+                    className={`p-3 rounded-xl border text-left transition-all cursor-pointer sm:col-span-2 ${
+                      ttsModelOverride === 'auto' || !ttsModelOverride
+                        ? 'bg-amber-600/20 border-amber-500 shadow-md ring-1 ring-amber-500'
+                        : 'bg-[#120a02] border-rattanakosin-900 hover:border-rattanakosin-gold/40'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold text-rattanakosin-gold">Smart Adaptive Cloud TTS (Auto Failover)</span>
+                      <span className="text-[9px] px-1.5 py-0.5 rounded bg-green-500/20 text-green-300 font-mono">Recommended</span>
+                    </div>
+                    <p className="text-[10px] text-rattanakosin-100/60 mt-1">Prioritizes Gemini 3.8 Flash Lite TTS with automatic failover to Gemini 3.8 Flash TTS.</p>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setTtsModelOverride('gemini-3.8-flash-lite-tts')}
+                    className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
+                      ttsModelOverride === 'gemini-3.8-flash-lite-tts'
+                        ? 'bg-amber-600/20 border-amber-500 shadow-md ring-1 ring-amber-500'
+                        : 'bg-[#120a02] border-rattanakosin-900 hover:border-rattanakosin-gold/40'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold text-rattanakosin-gold">Gemini 3.8 Flash Lite TTS</span>
+                      <span className="text-[9px] px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-300 font-mono">Fast</span>
+                    </div>
+                    <p className="text-[10px] text-rattanakosin-100/60 mt-1">Low-latency, high-efficiency speech synthesis.</p>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setTtsModelOverride('gemini-3.8-flash-tts')}
+                    className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
+                      ttsModelOverride === 'gemini-3.8-flash-tts'
+                        ? 'bg-amber-600/20 border-amber-500 shadow-md ring-1 ring-amber-500'
+                        : 'bg-[#120a02] border-rattanakosin-900 hover:border-rattanakosin-gold/40'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold text-rattanakosin-gold">Gemini 3.8 Flash TTS</span>
+                      <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 font-mono">Expressive</span>
+                    </div>
+                    <p className="text-[10px] text-rattanakosin-100/60 mt-1">Flagship voice design & expressive narrative pacing.</p>
+                  </button>
+                </div>
+
+                <div className="pt-1">
+                  <input 
+                    type="text"
+                    value={ttsModelOverride}
+                    onChange={(e) => setTtsModelOverride(e.target.value)}
+                    className="w-full px-4 py-2.5 rounded-xl bg-[#120a02] border border-rattanakosin-900 text-rattanakosin-50 focus:outline-none focus:ring-2 focus:ring-rattanakosin-gold font-mono text-xs sm:text-sm"
+                    placeholder="Custom TTS model or 'auto'"
+                  />
+                </div>
               </div>
             </div>
 
             <div className="pt-4 border-t border-rattanakosin-gold/10 flex justify-end">
               <button 
                 onClick={() => {
-                  setStoredTextModel(textModelOverride || 'gemini-2.5-flash');
-                  setStoredTtsModel(ttsModelOverride || 'gemini-3.1-flash-tts-preview');
+                  setStoredTextModel(textModelOverride || 'gemini-4-hydrogen');
+                  setStoredTtsModel(ttsModelOverride || 'auto');
                   setShowSettingsModal(false);
                 }}
                 className="px-6 py-3 rounded-xl bg-rattanakosin-600 hover:bg-rattanakosin-500 transition-colors text-white font-bold text-xs sm:text-sm uppercase tracking-widest cursor-pointer shadow-lg"
